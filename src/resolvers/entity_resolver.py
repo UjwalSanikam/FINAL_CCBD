@@ -103,11 +103,10 @@ class HashingTextEncoder:
 
 
 def load_embedding_model():
-    """Use stable local embeddings by default; opt into SentenceTransformer explicitly."""
-    if os.getenv("CHAINCHECK_USE_TRANSFORMER", "").lower() not in {"1", "true", "yes"}:
+    """Use transformer embeddings by default; fallback to hashing when unavailable."""
+    if os.getenv("CHAINCHECK_USE_HASHING", "").lower() in {"1", "true", "yes"}:
         logger.info(
-            "Using deterministic local hashing embeddings. Set CHAINCHECK_USE_TRANSFORMER=1 "
-            "to opt into sentence-transformer embeddings."
+            "Using deterministic local hashing embeddings because CHAINCHECK_USE_HASHING is set."
         )
         return HashingTextEncoder(), "hashing-local"
 
@@ -335,12 +334,11 @@ def extract_from_patents(patent_json: dict, source_file: str) -> list[EntityReco
     records = []
     triples = patent_json.get("triples", [])
 
-    # Cap at 1500 triples to prevent memory overflow during embedding on MPS
     if len(triples) > 1500:
-        logger.warning(
-            "Capping patent triples from %d to 1500 for memory safety", len(triples)
+        logger.info(
+            "Patent triple volume is high (%d entries); embedding will be batched instead of truncating.",
+            len(triples),
         )
-        triples = triples[:1500]
 
     for triple in triples:
         head = triple.get("head", "").strip()
@@ -484,8 +482,15 @@ def resolve_entities(
 
     def embed(records: list[EntityRecord]) -> np.ndarray:
         texts = [r.normalized for r in records]
-        vecs  = model.encode(texts, batch_size=64, show_progress_bar=False)
-        return np.array(vecs, dtype="float32")
+        chunk_size = 128
+        chunks: list[np.ndarray] = []
+        for i in range(0, len(texts), chunk_size):
+            batch = texts[i : i + chunk_size]
+            vec = model.encode(batch, batch_size=64, show_progress_bar=False)
+            chunks.append(np.array(vec, dtype="float32"))
+        if chunks:
+            return np.vstack(chunks)
+        return np.zeros((0, 384), dtype="float32")
 
     logger.info("Embedding whitepaper entities (%d)...", len(wp_records))
     wp_emb  = embed(wp_records)  if wp_records  else np.zeros((0, 384), dtype="float32")

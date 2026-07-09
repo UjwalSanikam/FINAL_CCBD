@@ -220,6 +220,25 @@ _REL_INDICATORS = (
 )
 _REL_VERBS = re.compile(_REL_INDICATORS, re.IGNORECASE)
 
+_RELATION_LABELS = [
+    (re.compile(r"\bcompris(?:es?|ing)\b", re.IGNORECASE), "COMPRISES"),
+    (re.compile(r"\binclud(?:es?|ing)\b", re.IGNORECASE), "INCLUDES"),
+    (re.compile(r"\bconsist(?:s|ing) of\b", re.IGNORECASE), "CONSISTS_OF"),
+    (re.compile(r"\bcontain(?:s|ing)\b", re.IGNORECASE), "CONTAINS"),
+    (re.compile(r"\bconstitut(?:es?|ing)\b", re.IGNORECASE), "CONSTITUTES"),
+    (re.compile(r"\bhas\b|\bhave\b|\bhav(?:e|ing)\b", re.IGNORECASE), "HAS"),
+    (re.compile(r"\bconnected to\b|\battached to\b|\bmounted on\b|\bcoupled to\b|\blinked to\b|\bjoined to\b|\bfixed to\b|\bsecured to\b", re.IGNORECASE), "CONNECTED_TO"),
+    (re.compile(r"\bis (?:connected|attached|mounted|coupled|linked|joined|fixed|secured|disposed|located|positioned|configured|adapted|designed|arranged|operable|transmitted|converted|transferred|generated|supplied|controlled|driven|powered|directed)\b", re.IGNORECASE), "STATE_IS"),
+    (re.compile(r"\brelates to\b|\bpertains to\b", re.IGNORECASE), "RELATES_TO"),
+    (re.compile(r"\bextends through\b|\bextends from\b|\bextends into\b|\bextends along\b|\bextends to\b", re.IGNORECASE), "EXTENDS_TO"),
+    (re.compile(r"\bpasses through\b|\bruns through\b", re.IGNORECASE), "RUNS_THROUGH"),
+    (re.compile(r"\bconverts\b|\btransfers\b|\btransmits\b|\bgenerates\b|\bsupplies\b|\bmonitors\b|\bmeasures\b|\bdetects\b|\bsenses\b|\bcontrols\b|\badjusts\b|\bmodifies\b|\boptimizes\b", re.IGNORECASE), "OPERATION"),
+    (re.compile(r"\bcommunicated via\b|\bcommunicated through\b|\bcommunicated by\b", re.IGNORECASE), "COMMUNICATED_VIA"),
+    (re.compile(r"\bsuch as\b|\bincluding\b", re.IGNORECASE), "INCLUDES"),
+]
+
+_GENERIC_REL = re.compile(r"\b(from|to|via|through|by|with|within|between|among|into|of|in|on|at|for|as)\b", re.IGNORECASE)
+
 
 def extract_relationship_between(sentence: str, head: str, tail: str) -> Optional[str]:
     """
@@ -239,21 +258,20 @@ def extract_relationship_between(sentence: str, head: str, tail: str) -> Optiona
     else:
         between = sentence[tail_idx + len(tail): head_idx].strip()
 
-    rel = re.sub(r"^[\s,;:]+|[\s,;:]+$", "", between)
-    rel = re.sub(r"\s+", " ", rel).strip()
+    rel_fragment = re.sub(r"^[\s,;:]+|[\s,;:]+$", "", between)
+    rel_fragment = re.sub(r"\s+", " ", rel_fragment).strip()
 
-    # If too long, find strongest indicator
-    if len(rel.split()) > 8 or not rel:
-        m = _REL_VERBS.search(between)
-        if m:
-            start = max(0, m.start() - 3)
-            end   = min(len(between), m.end() + 15)
-            rel   = between[start:end].strip()
-            rel   = re.sub(r"^[\s,;:]+|[\s,;:]+$", "", rel).strip()
-        else:
-            return None
+    if not rel_fragment:
+        return None
 
-    return rel if rel and len(rel) >= 2 else None
+    for pattern, label in _RELATION_LABELS:
+        if pattern.search(between):
+            return label
+
+    if _GENERIC_REL.search(between):
+        return "RELATED_TO"
+
+    return None
 
 
 def extract_triples_from_sentence(sentence: str) -> list:
@@ -289,6 +307,17 @@ def extract_triples_from_patent(text: str, patent_id: str = "UNKNOWN") -> list:
         for t in triples:
             t["patent_id"] = patent_id
         all_triples.extend(triples)
+    if len(sentences) == 0:
+        logger.warning(
+            "Patent %s produced zero candidate sentences after preprocessing; check raw text and section headers.",
+            patent_id,
+        )
+    elif len(all_triples) == 0:
+        logger.warning(
+            "Patent %s produced %d sentences but zero triples; review relation extraction quality.",
+            patent_id,
+            len(sentences),
+        )
     logger.info("Patent %s → %d sentences → %d triples.", patent_id, len(sentences), len(all_triples))
     return all_triples
 

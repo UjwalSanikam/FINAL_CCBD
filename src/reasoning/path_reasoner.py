@@ -326,7 +326,8 @@ class DynamicPathReasoner:
 
     This class exports ``structured_evidence.json`` for downstream scoring. It
     supports both this repo's ``kg.json`` node-link shape and the older
-    ``fused_knowledge_graph.json`` shape.
+    ``fused_knowledge_graph.json`` shape, but the pipeline prefers the fused
+    graph for primary path discovery when available.
     """
 
     def __init__(self, data_dir: Path):
@@ -337,7 +338,9 @@ class DynamicPathReasoner:
     def _resolve_graph_path(self) -> Path:
         kg_path = self.data_dir / "processed" / "kg.json"
         fused_path = self.data_dir / "processed" / "fused_knowledge_graph.json"
-        return kg_path if kg_path.exists() else fused_path
+        chosen = fused_path if fused_path.exists() else kg_path
+        logger.info("Dynamic path reasoner using graph file: %s", chosen)
+        return chosen
 
     def load_graph(self) -> None:
         graph_path = self._resolve_graph_path()

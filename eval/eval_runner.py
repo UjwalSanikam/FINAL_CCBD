@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import re
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -86,12 +87,29 @@ def ground_truth_overlap(questions_path: Path, gt_path: Path) -> float:
     if not gen_questions or not gt_questions:
         return 0.0
 
+    STOPWORDS = {
+        "that", "this", "with", "your", "have", "from",
+        "which", "what", "when", "would", "could", "should",
+        "their", "they", "them", "text", "question", "using",
+        "able", "also", "there", "here", "than", "then", "for",
+        "over", "more", "into", "what", "your",
+    }
+
+    def normalize_text(text: str) -> set[str]:
+        return {
+            w for w in re.findall(r"[a-z0-9]{4,}", text.lower())
+            if w not in STOPWORDS
+        }
+
     overlap_count = 0
     for gen_q in gen_questions:
-        gen_words = {w for w in gen_q.split() if len(w) >= 4}
+        gen_words = normalize_text(gen_q)
+        if not gen_words:
+            continue
         for gt_q in gt_questions:
-            gt_words = {w for w in gt_q.split() if len(w) >= 4}
-            if len(gen_words & gt_words) >= 2:
+            gt_words = normalize_text(gt_q)
+            shared = gen_words & gt_words
+            if len(shared) >= 3 and len(shared) / max(len(gen_words), 1) >= 0.25:
                 overlap_count += 1
                 break
 

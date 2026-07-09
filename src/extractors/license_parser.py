@@ -31,8 +31,8 @@ def run_license_scan(data_dir: Path):
     for node in nodes:
         module_name = node["id"]
         # We only scan external third-party libraries for licenses, not internal code
-        if node.get("type") == "internal":
-            continue 
+        if node.get("type") != "third_party":
+            continue
 
         # Lookup the license. If we don't know it, default to MIT
         license_name = LICENSE_DB.get(module_name, "UNKNOWN (Requires Manual Review ⚠️)")

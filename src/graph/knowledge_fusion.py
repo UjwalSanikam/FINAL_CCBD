@@ -171,11 +171,10 @@ class KnowledgeFusionPipeline:
         self._encoder = self._load_encoder()
 
     def _load_encoder(self):
-        """Use stable local embeddings by default; allow transformer embeddings by opt-in."""
-        if os.getenv("CHAINCHECK_USE_TRANSFORMER", "").lower() not in {"1", "true", "yes"}:
+        """Use transformer embeddings by default; fallback to hashing when unavailable."""
+        if os.getenv("CHAINCHECK_USE_HASHING", "").lower() in {"1", "true", "yes"}:
             logger.info(
-                "Using deterministic local hashing embeddings. Set CHAINCHECK_USE_TRANSFORMER=1 "
-                "to opt into sentence-transformer embeddings."
+                "Using deterministic local hashing embeddings because CHAINCHECK_USE_HASHING is set."
             )
             return _HashingTextEncoder()
 

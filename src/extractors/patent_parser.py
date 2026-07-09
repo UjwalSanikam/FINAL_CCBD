@@ -34,6 +34,13 @@ try:
     import spacy
     _NLP = spacy.load("en_core_web_sm")
     _SPACY_FULL = True
+except ImportError:
+    _NLP = None
+    _SPACY_FULL = False
+    logging.warning(
+        "spaCy not installed — using regex sentence splitting + rule-based NP extraction. "
+        "Install spaCy and en_core_web_sm for higher accuracy."
+    )
 except OSError:
     import spacy
     _NLP = spacy.blank("en")
@@ -52,8 +59,8 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 _SKIP_SECTIONS = re.compile(
     r"^(background|prior art|brief description of|examples?|embodiments?|"
-    r"preamble|title|publication date|assignee|inventors|"
-    r"cpc classifications|number of claims)",
+    r"preamble|title|publication date|grant date|assignee|inventors|status|"
+    r"patent number|cpc classifications|number of claims)",
     re.IGNORECASE,
 )
 _BRACKET_NOISE = re.compile(r"[\(\[\{<][^\)\]\}>]{0,80}[\)\]\}>]")
@@ -69,28 +76,54 @@ def clean_patent_text(raw: str) -> str:
 
 def split_into_sections(raw: str) -> dict:
     # strip the "PATENT ID: XXXX" line — it has inline content so it won't
-    # match the header-on-its-own-line pattern below, and would otherwise
-    # leak into PREAMBLE and get tokenized as prose
+    # match the header pattern below, and would otherwise leak into
+    # PREAMBLE and get tokenized as prose
     raw = re.sub(r"^PATENT ID:.*$", "", raw, flags=re.MULTILINE)
-    pattern = re.compile(
+
+    # Real patent files (e.g. USPTO/Google Patents style dumps) use headers
+    # of two shapes, neither of which is "alone on its own line":
+    #   "Title: Cryptographic hash function acceleration..."   (inline content)
+    #   "Claims (20)"                                           (trailing count)
+    # This pattern matches the header keyword at the start of a line,
+    # optionally followed by a parenthetical count and/or a colon, and
+    # captures whatever else remains on that same line as inline content.
+    header_re = re.compile(
         r"^(ABSTRACT|CLAIMS?|DESCRIPTION|SUMMARY|FIELD|"
         r"BACKGROUND|DRAWINGS?|EXAMPLES?|EMBODIMENTS?|"
-        r"TITLE|PUBLICATION DATE|ASSIGNEE|INVENTORS|"
-        r"CPC CLASSIFICATIONS|NUMBER OF CLAIMS)[:\s]*$",
+        r"TITLE|PUBLICATION DATE|GRANT DATE|ASSIGNEE|INVENTORS|STATUS|"
+        r"PATENT NUMBER|CPC CLASSIFICATIONS|NUMBER OF CLAIMS)"
+        r"\s*(?:\([^)]*\))?\s*:?[ \t]*(.*)$",
         re.IGNORECASE | re.MULTILINE,
     )
-    parts = pattern.split(raw)
-    sections, current = {}, "PREAMBLE"
-    i = 0
-    while i < len(parts):
-        chunk = parts[i].strip()
-        if pattern.match(chunk):
-            current = chunk.upper().rstrip(":")
-            i += 1
-            sections[current] = parts[i].strip() if i < len(parts) else ""
-        elif i == 0:
-            sections[current] = chunk
-        i += 1
+
+    matches = list(header_re.finditer(raw))
+    sections: dict = {}
+
+    if not matches:
+        # No recognizable headers at all — keep everything so downstream
+        # code still has text to work with, rather than silently dropping it.
+        sections["PREAMBLE"] = raw.strip()
+        return sections
+
+    # Anything before the first recognized header is preamble text.
+    if matches[0].start() > 0:
+        pre = raw[: matches[0].start()].strip()
+        if pre:
+            sections["PREAMBLE"] = pre
+
+    for idx, m in enumerate(matches):
+        name = m.group(1).upper().rstrip(":")
+        inline_content = m.group(2).strip() if m.group(2) else ""
+        body_start = m.end()
+        body_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw)
+        body = raw[body_start:body_end].strip()
+        content = f"{inline_content} {body}".strip() if inline_content else body
+
+        if name in sections:
+            sections[name] = f"{sections[name]} {content}".strip()
+        else:
+            sections[name] = content
+
     return sections
 
 
@@ -104,10 +137,14 @@ def get_artefact_sentences(raw: str) -> list:
         kept.append(content)
 
     cleaned = clean_patent_text(" ".join(kept))
-    doc = _NLP(cleaned)
+    raw_sentences = (
+        re.split(r"(?<=[.!?])\s+", cleaned)
+        if _NLP is None
+        else [sent.text for sent in _NLP(cleaned).sents]
+    )
     sentences = []
-    for sent in doc.sents:
-        text = sent.text.strip()
+    for sent in raw_sentences:
+        text = sent.strip()
         wc = len(text.split())
         if 3 <= wc <= 100:   # paper §3.1: retain sentences ≤100 words
             sentences.append(text)
@@ -322,4 +359,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -52,7 +52,11 @@ from pathlib import Path
 
 import networkx as nx
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -172,6 +176,12 @@ class KnowledgeFusionPipeline:
             logger.info(
                 "Using deterministic local hashing embeddings. Set CHAINCHECK_USE_TRANSFORMER=1 "
                 "to opt into sentence-transformer embeddings."
+            )
+            return _HashingTextEncoder()
+
+        if SentenceTransformer is None:
+            logger.warning(
+                "sentence-transformers is not installed. Using deterministic local hashing embeddings."
             )
             return _HashingTextEncoder()
 

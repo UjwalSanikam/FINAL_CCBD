@@ -60,8 +60,8 @@ available locally or can be fetched in your environment.
 pip install -r requirements.txt
 
 python pipeline.py \
-  --pitch data/raw/pitch_decks/startup.pdf \
-  --repo data/raw/repositories/chaincheck_demo \
+  --pitch data/raw/pitch_decks/vaultchain_pitch.pdf \
+  --repo data/raw/repositories/cryptosecure_startup \
   --patents data/raw/patents \
   --dry-run
 ```
@@ -84,8 +84,8 @@ Anthropic:
 ```bash
 export ANTHROPIC_API_KEY=your_key_here
 python pipeline.py \
-  --pitch data/raw/pitch_decks/startup.pdf \
-  --repo data/raw/repositories/chaincheck_demo \
+  --pitch data/raw/pitch_decks/vaultchain_pitch.pdf \
+  --repo data/raw/repositories/cryptosecure_startup \
   --provider anthropic
 ```
 
@@ -94,8 +94,8 @@ Ollama:
 ```bash
 ollama pull llama3
 python pipeline.py \
-  --pitch data/raw/pitch_decks/startup.pdf \
-  --repo data/raw/repositories/chaincheck_demo \
+  --pitch data/raw/pitch_decks/vaultchain_pitch.pdf \
+  --repo data/raw/repositories/cryptosecure_startup \
   --provider ollama \
   --model llama3
 ```
@@ -115,8 +115,8 @@ Optional environment variables:
 
 ```bash
 # Run every stage with local/template question generation
-python pipeline.py --pitch data/raw/pitch_decks/startup.pdf \
-  --repo data/raw/repositories/chaincheck_demo --dry-run
+python pipeline.py --pitch data/raw/pitch_decks/vaultchain_pitch.pdf \
+  --repo data/raw/repositories/cryptosecure_startup --dry-run
 
 # Resume from Stage 8
 python pipeline.py --start-stage 8
@@ -177,7 +177,7 @@ All stage outputs are written to `data/processed/`.
 │   │   ├── patents/
 │   │   ├── pitch_decks/
 │   │   └── repositories/
-│   │       └── chaincheck_demo/
+│   │       └── cryptosecure_startup/
 │   └── processed/
 ├── eval/
 │   ├── eval_runner.py
@@ -209,7 +209,7 @@ Place startup data under `data/raw/`:
 - Patent full-text files: `data/raw/patents/*.txt`
 
 This repository already includes a sample pitch deck, sample patent text files,
-and a demo repository at `data/raw/repositories/chaincheck_demo/`.
+and a demo repository at `data/raw/repositories/cryptosecure_startup/`.
 
 Patent helpers are available in `scripts/`:
 

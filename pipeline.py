@@ -27,8 +27,8 @@ Stages
 Usage
 -----
   # Full run
-  python pipeline.py --pitch data/raw/startup.pdf \\
-                     --repo  data/raw/repo/ \\
+  python pipeline.py --pitch data/raw/pitch_decks/vaultchain_pitch.pdf \\
+                     --repo  data/raw/repositories/cryptosecure_startup/ \\
                      --patents data/raw/patents/
 
   # Resume from stage 8 (skip extraction already done)

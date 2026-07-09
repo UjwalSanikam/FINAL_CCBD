@@ -30,9 +30,13 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-from sentence_transformers import SentenceTransformer
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,6 +108,12 @@ def load_embedding_model():
         logger.info(
             "Using deterministic local hashing embeddings. Set CHAINCHECK_USE_TRANSFORMER=1 "
             "to opt into sentence-transformer embeddings."
+        )
+        return HashingTextEncoder(), "hashing-local"
+
+    if SentenceTransformer is None:
+        logger.warning(
+            "sentence-transformers is not installed. Falling back to local hashing."
         )
         return HashingTextEncoder(), "hashing-local"
 

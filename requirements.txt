@@ -1,23 +1,35 @@
-# ── PDF extraction ────────────────────────────────────────────────────────────
-pdfplumber>=0.10.0
-pypdf>=3.0.0
-pytesseract>=0.3.10        # OCR fallback (needs system tesseract-ocr)
-pdf2image>=1.16.0          # OCR fallback (needs system poppler-utils)
-Pillow>=10.0.0             # OCR fallback
+# ChainCheck — VC Technical Due Diligence Pipeline
+# Install: pip install -r requirements.txt
 
-# ── NLP / embeddings ─────────────────────────────────────────────────────────
-spacy>=3.7.0               # patent_parser NER (run: python -m spacy download en_core_web_sm)
-sentence-transformers>=2.6.0  # entity_resolver embeddings
-faiss-cpu>=1.7.4           # entity_resolver vector search
+# ── Core NLP / Embeddings ──────────────────────────────────────────────────────
+sentence-transformers>=2.7.0   # all-MiniLM-L6-v2 for knowledge_fusion.py
+faiss-cpu>=1.8.0               # IndexFlatIP for O(n log n) cosine bridging
+numpy>=1.26.0
 
-# ── Graph ─────────────────────────────────────────────────────────────────────
-networkx>=3.2.0            # github_parser + kg_builder + hop_reasoner
+# ── Graph ──────────────────────────────────────────────────────────────────────
+networkx>=3.3                  # knowledge graph + BFS path reasoning
 
-# ── Data / validation ────────────────────────────────────────────────────────
-pydantic>=2.0.0            # whitepaper_parser schema validation (optional)
+# ── LLM providers ─────────────────────────────────────────────────────────────
+anthropic>=0.28.0              # claude-sonnet-4-6 (Stage 11 primary)
+ollama>=0.2.0                  # local Ollama daemon (Stage 11 fallback)
 
-# ── LLM API ──────────────────────────────────────────────────────────────────
-anthropic>=0.25.0          # question_gen (set ANTHROPIC_API_KEY env var)
+# ── PDF / Doc parsing ─────────────────────────────────────────────────────────
+pdfplumber>=0.11.0             # whitepaper_parser.py
+PyMuPDF>=1.24.0                # fitz — whitepaper image fallback
+python-docx>=1.1.0             # .docx whitepaper support
 
-# ── Testing ───────────────────────────────────────────────────────────────────
-pytest>=8.0.0
+# ── Web / API ─────────────────────────────────────────────────────────────────
+requests>=2.32.0               # patent_downloader.py (USPTO PatentsView API)
+beautifulsoup4>=4.12.0
+lxml>=5.2.0
+
+# ── Data / Serialization ──────────────────────────────────────────────────────
+packaging>=24.0                # version parsing in github_parser.py
+toml>=0.10.2                   # pyproject.toml parsing
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+streamlit>=1.36.0              # dashboard.py
+
+# ── Dev / Testing ─────────────────────────────────────────────────────────────
+pytest>=8.2.0
+pytest-cov>=5.0.0

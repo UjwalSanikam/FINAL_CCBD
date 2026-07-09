@@ -1,281 +1,314 @@
 """
-question_gen.py — Adversarial Question Generator
-=================================================
-Multi-Hop Reasoning System for VC Technical Due Diligence
+question_gen.py — Adversarial LLM Question Generator
+=====================================================
+ChainCheck | Multi-Hop Reasoning Pipeline
 
-Takes hop_chains.json (from path_reasoner.py) and calls an LLM to generate
-one pointed, adversarial due-diligence question per chain. Every question
-is returned with its full provenance audit trail.
+Takes structured_evidence.json or hop_chains.json and calls an LLM to
+generate one pointed, adversarial due-diligence question per chain.
 
-Output:
-    data/processed/questions.json
+Supports two providers via --provider flag:
+  anthropic  — Uses claude-sonnet-4-6 (set ANTHROPIC_API_KEY)
+  ollama     — Uses a local Ollama model (default: llama3; run `ollama pull llama3`)
 
-Usage:
-    pip install anthropic
-    export ANTHROPIC_API_KEY=your_key_here
+Every generated question is returned with its full provenance audit trail
+so the explainability engine can stamp a SHA-256 trace ID.
 
-    python src/generation/question_gen.py
-    python src/generation/question_gen.py --chains data/processed/hop_chains.json
-    python src/generation/question_gen.py --dry-run   # prints prompts, no API call
+Output
+------
+  data/processed/questions.json
+
+Usage
+-----
+  export ANTHROPIC_API_KEY=your_key_here
+  python src/generation/question_gen.py --provider anthropic
+
+  # No API key — local Ollama
+  python src/generation/question_gen.py --provider ollama --model llama3
+
+  # Dry-run: print prompts, no API call
+  python src/generation/question_gen.py --dry-run
 """
 
-import os
+from __future__ import annotations
+
 import json
 import logging
-import argparse
+import os
 import time
-from pathlib import Path
+import argparse
+import socket
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Optional
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-MODEL            = "claude-sonnet-4-6"
-MAX_TOKENS       = 512
-RETRY_ATTEMPTS   = 3
-RETRY_DELAY      = 2.0      # seconds between retries
-RATE_LIMIT_DELAY = 0.5      # seconds between API calls
+ANTHROPIC_MODEL   = "claude-sonnet-4-6"
+OLLAMA_MODEL      = "llama3"
+OLLAMA_HOST       = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+OLLAMA_TIMEOUT_S  = float(os.environ.get("OLLAMA_TIMEOUT_S", "20"))
+MAX_TOKENS        = 512
+RETRY_ATTEMPTS    = 3
+RETRY_DELAY_S     = 2.0
 
-# System prompt — instructs the LLM to behave as an adversarial VC analyst
-SYSTEM_PROMPT = """You are a senior technical due-diligence analyst at a venture capital firm.
-Your job is to generate sharp, specific, adversarial questions that a VC partner should ask
-a startup founder during a technical review meeting.
+SYSTEM_PROMPT = """You are an adversarial technical due-diligence analyst for a top-tier
+venture capital firm. Your job is to generate exactly ONE sharp, targeted question
+for investors to ask startup founders.
 
 Rules:
-- Ask exactly ONE question per response. No preamble, no explanation, just the question.
-- The question must be grounded in the specific technical evidence provided.
-- Reference the actual library names, patent concepts, or licence types mentioned.
-- The question should be something the founder cannot easily deflect with a vague answer.
-- Focus on: IP conflicts, licence restrictions, technical feasibility, hidden dependencies,
-  or claims that cannot be substantiated by the codebase evidence.
-- Tone: professional but pointed. A good question makes the founder pause.
-- Do NOT ask generic questions like "How do you plan to scale?" unless directly supported
-  by the evidence chain.
-- End the question with a question mark."""
+- The question must follow directly from the evidence chain provided.
+- Never ask a question you could answer yourself with generic knowledge.
+- Use technical vocabulary appropriate to the domain.
+- Maximum 3 sentences. Do not add preamble, explanation, or lists.
+- Output only the question, nothing else."""
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
 @dataclass
-class GeneratedQuestion:
-    question_id: str
-    chain_id: str
-    question: str
-    question_category: str      # licence_risk | ip_conflict | feasibility | dependency
-    chain_score: float
-    hop_count: int
+class DueDiligenceQuestion:
+    chain_id:          str
+    question:          str
+    question_category: str
     has_licence_conflict: bool
-    has_patent_node: bool
-    audit_trail: list[dict]     # human-readable hop-by-hop provenance
-    raw_provenance: dict        # full chain provenance for downstream use
+    has_patent_node:   bool
+    chain_score:       float
+    audit_trail:       dict
+    raw_provenance:    dict
+    provider_used:     str
+
+
+class OllamaModelNotFound(RuntimeError):
+    """Raised when Ollama is reachable but the requested local model is absent."""
+
+
+# ── LLM providers ─────────────────────────────────────────────────────────────
+
+def _call_anthropic(prompt: str) -> str:
+    """Call Anthropic API. Raises on failure."""
+    import anthropic
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY not set")
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=ANTHROPIC_MODEL,
+        max_tokens=MAX_TOKENS,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text.strip()
+
+
+def _ollama_request(path: str, payload: Optional[dict] = None) -> dict:
+    """Call Ollama's HTTP API using only the standard library."""
+    url = f"{OLLAMA_HOST}{path}"
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST" if payload else "GET")
+    try:
+        with urllib.request.urlopen(request, timeout=OLLAMA_TIMEOUT_S) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Ollama API error from {url}: HTTP {e.code} {body.strip()}"
+        ) from e
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", e)
+        raise ConnectionError(
+            f"Ollama daemon is not reachable at {OLLAMA_HOST}. "
+            "Start it with `ollama serve` or set OLLAMA_HOST."
+        ) from reason
+    except (TimeoutError, socket.timeout) as e:
+        raise TimeoutError(
+            f"Ollama request to {OLLAMA_HOST} timed out after {OLLAMA_TIMEOUT_S:.1f}s"
+        ) from e
+
+
+def _check_ollama_available(model: str) -> None:
+    """Fail fast with a useful message before per-question generation starts."""
+    data = _ollama_request("/api/tags")
+    available_names = {
+        item.get("name", "")
+        for item in data.get("models", [])
+        if item.get("name")
+    }
+    available_bases = {name.split(":", 1)[0] for name in available_names}
+    requested_base = model.split(":", 1)[0]
+    if available_bases and requested_base not in available_bases:
+        installed = ", ".join(sorted(available_names)) or "none"
+        raise OllamaModelNotFound(
+            f"Ollama is reachable at {OLLAMA_HOST}, but model '{model}' is not installed. "
+            f"Installed models: {installed}. Run `ollama pull {model}` or pass "
+            "`--model <installed-model>`."
+        )
+
+
+def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
+    """Call local Ollama daemon. Raises clear connection/model errors."""
+    response = _ollama_request(
+        "/api/chat",
+        {
+            "model": model,
+            "stream": False,
+            "options": {"num_predict": MAX_TOKENS},
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        },
+    )
+    try:
+        return response["message"]["content"].strip()
+    except KeyError as e:
+        raise RuntimeError(f"Unexpected Ollama response from {OLLAMA_HOST}: {response}") from e
+
+
+def _call_llm(prompt: str, provider: str, model: str) -> str:
+    """Route to the correct LLM provider with retries."""
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            if provider == "anthropic":
+                return _call_anthropic(prompt)
+            elif provider == "ollama":
+                return _call_ollama(prompt, model=model)
+            else:
+                raise ValueError(f"Unknown provider: {provider}")
+        except Exception as e:
+            logger.warning("LLM call attempt %d/%d failed: %s", attempt, RETRY_ATTEMPTS, e)
+            if attempt < RETRY_ATTEMPTS:
+                time.sleep(RETRY_DELAY_S)
+    raise RuntimeError(f"All {RETRY_ATTEMPTS} LLM attempts failed")
 
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
-def build_chain_summary(chain: dict) -> str:
-    """
-    Convert a hop chain into a structured evidence block for the LLM prompt.
-    The more specific this is, the more grounded the generated question will be.
-    """
-    prov   = chain.get("provenance", {})
-    nodes  = prov.get("nodes", [])
-    edges  = prov.get("edges", [])
-    lines  = ["EVIDENCE CHAIN:"]
+def _build_prompt_from_structured_evidence(ev: dict) -> str:
+    """Build a prompt from structured_evidence.json format."""
+    claim  = ev.get("claim_text", ev.get("claim_id", ""))
+    path   = ev.get("reasoning_path", [])
+    rtype  = ev.get("risk_type", "Unknown Risk")
+    score  = ev.get("confidence_score", 0.0)
+    risk_n = ev.get("risk_node", "")
 
-    for i, edge in enumerate(edges):
-        from_node = next((n for n in nodes if n["node_id"] == edge["from"]), {})
-        to_node   = next((n for n in nodes if n["node_id"] == edge["to"]),   {})
+    path_str = " → ".join(path) if path else "N/A"
 
-        from_type  = from_node.get("node_type", "Unknown")
-        to_type    = to_node.get("node_type",   "Unknown")
-        from_label = from_node.get("label", edge["from"])
-        to_label   = to_node.get("label",   edge["to"])
-        edge_type  = edge.get("edge_type", "relates_to")
-        weight     = edge.get("weight", 0.0)
+    return f"""EVIDENCE CHAIN
+--------------
+Claim from pitch deck: "{claim}"
+Risk type: {rtype}
+Confidence score: {score:.3f}
+Reasoning path: {path_str}
+Risk node flagged: {risk_n}
 
-        # Pull meaningful metadata per node type
-        from_meta = from_node.get("metadata", {})
-        to_meta   = to_node.get("metadata",   {})
-
-        hop_line = f"  Hop {i+1}: [{from_type}] \"{from_label}\""
-        if from_type == "Claim":
-            hop_line += f" (type={from_meta.get('claim_type','?')}, page={from_meta.get('page','?')})"
-        elif from_type == "Library":
-            hop_line += f" (licence={from_meta.get('licence','?')}, risk={from_meta.get('licence_risk','?')})"
-        elif from_type == "Patent":
-            hop_line += f" (relationship: {from_meta.get('relationship','?')})"
-
-        hop_line += f"\n        --[{edge_type} | similarity={weight:.2f}]-->"
-        hop_line += f"\n        [{to_type}] \"{to_label}\""
-
-        if to_type == "Library":
-            hop_line += f" (licence={to_meta.get('licence','?')}, risk={to_meta.get('licence_risk','?')})"
-        elif to_type == "Patent":
-            hop_line += f"\n        Patent claim context: \"{to_meta.get('source_sentence','')[:150]}\""
-        elif to_type == "LicenceType":
-            hop_line += f" (commercial_use_restricted={to_meta.get('commercial_use_restricted','?')})"
-
-        lines.append(hop_line)
-
-    lines.append(f"\nCHAIN CONFIDENCE SCORE: {chain.get('chain_score', 0.0):.4f}")
-
-    flags = []
-    if chain.get("has_licence_conflict"):
-        flags.append("LICENCE CONFLICT DETECTED")
-    if chain.get("has_patent_node"):
-        flags.append("PATENT OVERLAP DETECTED")
-    if flags:
-        lines.append("FLAGS: " + " | ".join(flags))
-
-    return "\n".join(lines)
+Generate exactly one adversarial due-diligence question an investor should ask
+the founder about this evidence chain."""
 
 
-def build_prompt(chain: dict) -> str:
-    """Full user prompt sent to the LLM for one chain."""
-    chain_summary = build_chain_summary(chain)
-    return f"""A startup's technical whitepaper has been cross-referenced against open-source
-dependency data and patent databases. The following evidence chain was discovered.
+def _build_prompt_from_hop_chain(chain: dict) -> str:
+    """Build a prompt from hop_chains.json format."""
+    start     = chain.get("start_node", "")
+    nodes     = chain.get("path_nodes", [])
+    edges     = chain.get("path_edges", [])
+    score     = chain.get("chain_score", 0.0)
+    prov      = chain.get("provenance", {})
+    node_data = prov.get("nodes", [])
 
-{chain_summary}
+    path_parts = []
+    for i, (n, e) in enumerate(zip(nodes, edges + [""])):
+        ntype = chain.get("path_node_types", [""])[i] if i < len(chain.get("path_node_types", [])) else ""
+        meta = next((nd.get("metadata", {}) for nd in node_data if nd.get("node_id") == n), {})
+        text = meta.get("text") or meta.get("full_text") or n
+        path_parts.append(f"[{ntype}] {text[:80]}")
+        if e:
+            path_parts.append(f"  —[{e}]→")
 
-Based on this specific evidence chain, generate one adversarial due-diligence question
-that a VC partner should ask the startup founder."""
+    path_str   = "\n".join(path_parts)
+    lic_flag   = chain.get("has_licence_conflict", False)
+    pat_flag   = chain.get("has_patent_node", False)
+    risk_flags = []
+    if lic_flag:
+        risk_flags.append("LICENSE CONFLICT")
+    if pat_flag:
+        risk_flags.append("PATENT OVERLAP")
+    flags_str  = ", ".join(risk_flags) or "General IP concern"
 
+    return f"""MULTI-HOP EVIDENCE CHAIN
+------------------------
+Chain score: {score:.4f}
+Risk flags: {flags_str}
+Starting node: {start}
 
-def categorize_question(chain: dict) -> str:
-    """Assign a category label to the question based on chain properties."""
-    if chain.get("has_licence_conflict"):
-        return "licence_risk"
-    if chain.get("has_patent_node"):
-        return "ip_conflict"
-    edges = chain.get("path_edges", [])
-    if "implements" in edges:
-        return "dependency"
-    return "feasibility"
+Reasoning path:
+{path_str}
 
-
-# ── Audit trail builder ───────────────────────────────────────────────────────
-
-def build_audit_trail(chain: dict) -> list[dict]:
-    """
-    Build a clean, human-readable audit trail from a hop chain.
-    This is what gets shown to the VC analyst alongside the question.
-    Format: [{step, node_type, label, relationship_to_next}]
-    """
-    prov  = chain.get("provenance", {})
-    nodes = prov.get("nodes", [])
-    edges = prov.get("edges", [])
-    trail = []
-
-    for i, node in enumerate(nodes):
-        step = {
-            "step":      i + 1,
-            "node_type": node.get("node_type"),
-            "label":     node.get("label", node.get("node_id")),
-            "metadata":  node.get("metadata", {}),
-        }
-        if i < len(edges):
-            step["relationship_to_next"] = edges[i].get("edge_type")
-            step["similarity_score"]     = edges[i].get("weight")
-        trail.append(step)
-
-    return trail
+Generate exactly one adversarial due-diligence question an investor should ask
+the founder about this evidence chain."""
 
 
-# ── LLM caller ───────────────────────────────────────────────────────────────
+# ── Template fallback ─────────────────────────────────────────────────────────
 
-def call_llm(prompt: str, dry_run: bool = False) -> Optional[str]:
-    """
-    Call LLM with automatic fallback:
-    - If ANTHROPIC_API_KEY is set → use Claude API
-    - If not set → use Ollama phi3 locally (free)
-    - If dry_run → print prompt and return placeholder
-    """
-    if dry_run:
-        logger.info("[DRY RUN] Prompt:\n%s", prompt)
-        return "[DRY RUN] What specific measures has your team taken to ensure that your use of [library] complies with its [licence] licence given your commercial deployment plans?"
+def _template_question(chain: dict, source_format: str) -> str:
+    """Generate a deterministic fallback question when LLM is unavailable."""
+    if source_format == "structured_evidence":
+        claim  = chain.get("claim_text", chain.get("claim_id", "unknown claim"))[:100]
+        rtype  = chain.get("risk_type", "IP risk")
+        node   = chain.get("risk_node", "an external component")
+        return (
+            f"You claim '{claim}', yet our analysis identified a {rtype} "
+            f"involving '{node}'. Can you explain your legal strategy and "
+            f"how you have validated that this does not create liability at scale?"
+        )
+    else:
+        # hop_chain format
+        start    = chain.get("start_node", "your claimed technology")
+        nodes    = chain.get("path_nodes", [])
+        has_pat  = chain.get("has_patent_node", False)
+        has_lic  = chain.get("has_licence_conflict", False)
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if has_lic and has_pat:
+            suffix = "given both open-source license obligations and active patent overlap?"
+        elif has_lic:
+            suffix = "given the open-source license restrictions we identified?"
+        elif has_pat:
+            suffix = "given the active patent we found in this dependency chain?"
+        else:
+            suffix = "and how does this third-party dependency chain affect your IP defensibility?"
 
-    # ── Path A: Anthropic Claude API ──────────────────────────────────────
-    if api_key:
-        try:
-            import anthropic
-        except ImportError:
-            raise SystemExit(
-                "anthropic package not found.\n"
-                "Install: pip install anthropic"
-            )
+        mid = f"'{nodes[1]}'" if len(nodes) > 1 else "external libraries"
+        return (
+            f"Your architecture references '{start}', which relies on {mid}. "
+            f"What is your commercialization strategy {suffix}"
+        )
 
-        client = anthropic.Anthropic(api_key=api_key)
-        for attempt in range(1, RETRY_ATTEMPTS + 1):
-            try:
-                response = client.messages.create(
-                    model=MODEL,
-                    max_tokens=MAX_TOKENS,
-                    system=SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                text = response.content[0].text.strip()
-                if not text.endswith("?"):
-                    text = text.rstrip(".") + "?"
-                return text
-            except Exception as e:
-                logger.warning("API call attempt %d/%d failed: %s", attempt, RETRY_ATTEMPTS, e)
-                if attempt < RETRY_ATTEMPTS:
-                    time.sleep(RETRY_DELAY * attempt)
 
-        logger.error("All %d API attempts failed for this chain", RETRY_ATTEMPTS)
-        return None
+# ── Category classifier ───────────────────────────────────────────────────────
 
-    # ── Path B: Ollama phi3 local fallback ────────────────────────────────
-    logger.info("No ANTHROPIC_API_KEY found — using Ollama phi3 locally")
-    import urllib.request
-    import json as _json
-
-    full_prompt = f"{SYSTEM_PROMPT}\n\n{prompt}"
-    payload = _json.dumps({
-        "model": "phi3",
-        "prompt": full_prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0.7,
-            "num_predict": MAX_TOKENS,
-        }
-    }).encode()
-
-    for attempt in range(1, RETRY_ATTEMPTS + 1):
-        try:
-            req = urllib.request.Request(
-                "http://127.0.0.1:11434/api/generate",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=60) as r:
-                data = _json.loads(r.read().decode())
-            text = data.get("response", "").strip()
-            if not text:
-                raise ValueError("Empty response from Ollama")
-            if not text.endswith("?"):
-                text = text.rstrip(".") + "?"
-            logger.info("Ollama phi3 responded successfully")
-            return text
-        except Exception as e:
-            logger.warning(
-                "Ollama attempt %d/%d failed: %s", attempt, RETRY_ATTEMPTS, e
-            )
-            if attempt < RETRY_ATTEMPTS:
-                time.sleep(RETRY_DELAY * attempt)
-
-    logger.error("Ollama failed after %d attempts — is ollama serve running?", RETRY_ATTEMPTS)
-    return None
+def _classify(chain: dict, source_format: str) -> str:
+    if source_format == "structured_evidence":
+        return chain.get("risk_type", "IP Overlap")
+    has_lic = chain.get("has_licence_conflict", False)
+    has_pat = chain.get("has_patent_node", False)
+    if has_lic and has_pat:
+        return "licence_and_patent"
+    if has_lic:
+        return "licence_conflict"
+    if has_pat:
+        return "patent_overlap"
+    return "dependency_risk"
 
 
 # ── Main generator ────────────────────────────────────────────────────────────
@@ -283,139 +316,185 @@ def call_llm(prompt: str, dry_run: bool = False) -> Optional[str]:
 def generate_questions(
     chains_path: Path,
     output_path: Path,
+    provider: str = "anthropic",
+    model: str = "",
     dry_run: bool = False,
     max_questions: Optional[int] = None,
-) -> list[GeneratedQuestion]:
+) -> list[DueDiligenceQuestion]:
     """
-    Main pipeline: load chains → build prompts → call LLM → collect questions.
-    Processes chains in priority order (licence conflicts first, then patents).
+    Load chains from chains_path, generate one question per chain.
+    Falls back to templates automatically if the LLM call fails.
     """
-    data   = json.loads(chains_path.read_text(encoding="utf-8"))
-    chains = data.get("chains", [])
+    _model = model or (OLLAMA_MODEL if provider == "ollama" else ANTHROPIC_MODEL)
+
+    data = json.loads(chains_path.read_text(encoding="utf-8"))
+
+    # Auto-detect format
+    if "evidence_objects" in data:
+        chains = data["evidence_objects"]
+        source_format = "structured_evidence"
+    else:
+        chains = data.get("chains", [])
+        source_format = "hop_chains"
 
     if max_questions:
         chains = chains[:max_questions]
 
-    logger.info("Generating questions for %d chains...", len(chains))
+    logger.info(
+        "Generating %d questions from %s via %s%s",
+        len(chains), source_format, provider,
+        " (DRY RUN)" if dry_run else "",
+    )
 
-    questions: list[GeneratedQuestion] = []
-    q_counter = 0
+    provider_available = True
+    provider_error = ""
+    if provider == "ollama" and not dry_run:
+        try:
+            _check_ollama_available(_model)
+        except Exception as e:
+            provider_available = False
+            provider_error = str(e)
+            logger.error("%s Falling back to deterministic templates for this run.", provider_error)
+
+    questions: list[DueDiligenceQuestion] = []
+    template_count = 0
 
     for i, chain in enumerate(chains):
-        chain_id = chain.get("chain_id", f"chain_{i:04d}")
-        logger.info(
-            "[%d/%d] Processing %s (score=%.3f, hops=%d)",
-            i + 1, len(chains),
-            chain_id,
-            chain.get("chain_score", 0),
-            chain.get("hop_count", 0),
-        )
+        chain_id = chain.get("chain_id", f"chain_{i+1:04d}")
 
-        prompt   = build_prompt(chain)
-        question = call_llm(prompt, dry_run=dry_run)
+        if source_format == "structured_evidence":
+            prompt = _build_prompt_from_structured_evidence(chain)
+        else:
+            prompt = _build_prompt_from_hop_chain(chain)
 
-        if question is None:
-            logger.warning("Skipping %s — LLM call failed", chain_id)
-            continue
+        if dry_run:
+            logger.info("--- DRY RUN PROMPT [%s] ---\n%s\n---", chain_id, prompt)
+            question_text = _template_question(chain, source_format)
+            provider_used = "dry_run_template"
+        elif not provider_available:
+            question_text = _template_question(chain, source_format)
+            provider_used = f"template_fallback_ollama_unavailable:{_model}"
+            template_count += 1
+        else:
+            try:
+                question_text = _call_llm(prompt, provider, _model)
+                provider_used = f"{provider}/{_model}"
+            except Exception as e:
+                logger.warning("[%s] LLM failed, using template: %s", chain_id, e)
+                question_text = _template_question(chain, source_format)
+                provider_used = "template_fallback"
+                template_count += 1
 
-        q_counter += 1
-        audit_trail = build_audit_trail(chain)
-        category    = categorize_question(chain)
+        # Build audit trail
+        if source_format == "structured_evidence":
+            audit_trail = {
+                "hop_1": f"Pitch deck claim: {chain.get('claim_text', chain.get('claim_id', ''))[:80]}",
+                "hop_2": chain.get("reasoning_path", []),
+                "hop_3": chain.get("risk_node", ""),
+                "evidence_source": str(chains_path),
+            }
+            provenance = {k: v for k, v in chain.items() if k != "question"}
+        else:
+            prov = chain.get("provenance", {})
+            node_dets = prov.get("nodes", [])
+            audit_trail = {
+                "hop_1": node_dets[0].get("node_id", "") if node_dets else "",
+                "hop_2": [nd.get("node_id", "") for nd in node_dets[1:]],
+                "hop_3": chain.get("path_nodes", [])[-1] if chain.get("path_nodes") else "",
+                "evidence_source": str(chains_path),
+            }
+            provenance = chain.get("provenance", {})
 
-        questions.append(GeneratedQuestion(
-            question_id=f"q_{q_counter:04d}",
+        questions.append(DueDiligenceQuestion(
             chain_id=chain_id,
-            question=question,
-            question_category=category,
-            chain_score=chain.get("chain_score", 0.0),
-            hop_count=chain.get("hop_count", 0),
+            question=question_text,
+            question_category=_classify(chain, source_format),
             has_licence_conflict=chain.get("has_licence_conflict", False),
-            has_patent_node=chain.get("has_patent_node", False),
+            has_patent_node=chain.get("has_patent_node", chain.get("risk_type") == "IP Overlap"),
+            chain_score=chain.get("chain_score", chain.get("confidence_score", 0.0)),
             audit_trail=audit_trail,
-            raw_provenance=chain.get("provenance", {}),
+            raw_provenance=provenance,
+            provider_used=provider_used,
         ))
 
-        # Rate limiting between API calls
-        if not dry_run and i < len(chains) - 1:
-            time.sleep(RATE_LIMIT_DELAY)
+    if template_count:
+        logger.warning(
+            "%d/%d questions used template fallback — check LLM connectivity",
+            template_count, len(questions),
+        )
 
-    logger.info("Generated %d questions from %d chains", len(questions), len(chains))
     return questions
 
 
-# ── Output ────────────────────────────────────────────────────────────────────
-
-def save_questions(questions: list[GeneratedQuestion], output_path: Path) -> None:
-    by_category: dict[str, int] = {}
-    for q in questions:
-        by_category[q.question_category] = by_category.get(q.question_category, 0) + 1
-
+def save_questions(questions: list[DueDiligenceQuestion], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output = {
         "metadata": {
             "total_questions": len(questions),
-            "by_category": by_category,
-            "licence_risk_questions":  sum(1 for q in questions if q.has_licence_conflict),
-            "ip_conflict_questions":   sum(1 for q in questions if q.has_patent_node),
-            "model_used": MODEL,
+            "by_category": {
+                cat: sum(1 for q in questions if q.question_category == cat)
+                for cat in sorted({q.question_category for q in questions})
+            },
+            "with_licence_conflict": sum(1 for q in questions if q.has_licence_conflict),
+            "with_patent_node":      sum(1 for q in questions if q.has_patent_node),
         },
         "questions": [asdict(q) for q in questions],
     }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(output, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
-    logger.info("Saved questions → %s", output_path)
+    output_path.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Saved %d questions → %s", len(questions), output_path)
 
 
-def print_questions(questions: list[GeneratedQuestion]) -> None:
-    print(f"\n{'═'*72}")
+def print_questions(questions: list[DueDiligenceQuestion]) -> None:
+    print(f"\n{'═'*70}")
     print("  GENERATED DUE-DILIGENCE QUESTIONS")
-    print(f"{'═'*72}")
-
-    for q in questions:
+    print(f"{'═'*70}")
+    for i, q in enumerate(questions, 1):
         flags = []
-        if q.has_licence_conflict:
-            flags.append("⚠ LICENCE")
-        if q.has_patent_node:
-            flags.append("⚠ PATENT")
-        flag_str = "  ".join(flags)
-
-        print(f"\n  [{q.question_id}] {q.question_category.upper()}  {flag_str}")
-        print(f"  Score: {q.chain_score:.4f}  |  Hops: {q.hop_count}  |  Chain: {q.chain_id}")
-        print(f"\n  Q: {q.question}")
-        print(f"\n  Audit trail:")
-        for step in q.audit_trail:
-            rel = f" --[{step.get('relationship_to_next')}]--> " if step.get("relationship_to_next") else ""
-            print(f"     {step['step']}. [{step['node_type']}] {step['label']}{rel}")
-        print(f"  {'─'*66}")
-
-    print(f"\n{'═'*72}\n")
+        if q.has_licence_conflict: flags.append("LICENCE⚠")
+        if q.has_patent_node:      flags.append("PATENT")
+        flag_str = " ".join(flags)
+        print(f"\n  Q{i}. [{q.chain_id}] {q.question_category.upper()} {flag_str}")
+        print(f"  Score: {q.chain_score:.4f}  Provider: {q.provider_used}")
+        print(f"  ▸ {q.question}")
+        print(f"  Audit: {q.audit_trail.get('hop_1', '')[:60]} → "
+              f"{str(q.audit_trail.get('hop_3', ''))[:40]}")
+    print(f"{'═'*70}\n")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generate adversarial VC due-diligence questions from hop chains"
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="ChainCheck adversarial question generator")
+    ap.add_argument("--chains",    default=None,
+                    help="Path to structured_evidence.json or hop_chains.json")
+    ap.add_argument("--output",    default=None)
+    ap.add_argument("--provider",  choices=["anthropic", "ollama"], default="anthropic")
+    ap.add_argument("--model",     default="",
+                    help="Override default model name for the selected provider")
+    ap.add_argument("--dry-run",   action="store_true")
+    ap.add_argument("--max",       type=int, default=None)
+    args = ap.parse_args()
+
+    base = Path(__file__).resolve().parents[2]
+    chains_path = (
+        Path(args.chains) if args.chains
+        else (base / "data" / "processed" / "structured_evidence.json")
     )
-    parser.add_argument("--chains",        default="data/processed/hop_chains.json")
-    parser.add_argument("--output",        default="data/processed/questions.json")
-    parser.add_argument("--max-questions", type=int, default=None,
-                        help="Limit number of questions generated (useful for testing)")
-    parser.add_argument("--dry-run",       action="store_true",
-                        help="Print prompts without calling the API")
-    args = parser.parse_args()
+    if not chains_path.exists():
+        chains_path = base / "data" / "processed" / "hop_chains.json"
+
+    output_path = (
+        Path(args.output) if args.output
+        else (base / "data" / "processed" / "questions.json")
+    )
 
     questions = generate_questions(
-        chains_path=Path(args.chains),
-        output_path=Path(args.output),
+        chains_path=chains_path,
+        output_path=output_path,
+        provider=args.provider,
+        model=args.model,
         dry_run=args.dry_run,
-        max_questions=args.max_questions,
+        max_questions=args.max,
     )
     print_questions(questions)
-    save_questions(questions, Path(args.output))
-
-
-if __name__ == "__main__":
-    main()
+    save_questions(questions, output_path)

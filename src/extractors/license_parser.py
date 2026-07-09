@@ -50,4 +50,3 @@ def run_license_scan(data_dir: Path):
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[2]
-    run_license_scan(project_root / "data")

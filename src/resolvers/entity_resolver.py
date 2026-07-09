@@ -22,6 +22,7 @@ Usage:
 """
 import re
 import json
+import hashlib
 import logging
 import argparse
 import numpy as np
@@ -29,7 +30,6 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-import faiss
 from sentence_transformers import SentenceTransformer
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -46,6 +46,7 @@ MODEL_NAME   = "all-MiniLM-L6-v2"   # fast, 384-dim, good cross-domain recall
 SCORE_THRESH = 0.78                  # cosine similarity threshold (tune in Phase 3)
 TOP_K        = 5                     # max matches per entity
 MAX_REL_LEN  = 60                    # truncate long patent relationships
+HASH_EMBEDDING_DIM = 384             # match MiniLM dimensionality for FAISS indexes
 
 # Reuse the buzzword normalization from whitepaper_parser so entity strings
 # are pre-normalized before embedding (reduces vocabulary mismatch).
@@ -72,6 +73,53 @@ BUZZWORD_MAP = {
     "sharding":                "horizontal-database-partitioning",
     "merkle":                  "merkle-tree-hash-structure",
 }
+
+
+class HashingTextEncoder:
+    """Deterministic local fallback when transformer embeddings are unavailable."""
+
+    def encode(
+        self,
+        texts: list[str],
+        batch_size: int = 64,
+        show_progress_bar: bool = False,
+    ) -> np.ndarray:
+        del batch_size, show_progress_bar
+        vectors = np.zeros((len(texts), HASH_EMBEDDING_DIM), dtype="float32")
+        for row, text in enumerate(texts):
+            tokens = re.findall(r"[a-z0-9_]+", text.lower())
+            if not tokens:
+                tokens = [text.lower() or "<empty>"]
+            for token in tokens:
+                digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+                bucket = int.from_bytes(digest[:4], "little") % HASH_EMBEDDING_DIM
+                sign = 1.0 if digest[4] & 1 else -1.0
+                vectors[row, bucket] += sign
+        return vectors
+
+
+def load_embedding_model():
+    """Use stable local embeddings by default; opt into SentenceTransformer explicitly."""
+    if os.getenv("CHAINCHECK_USE_TRANSFORMER", "").lower() not in {"1", "true", "yes"}:
+        logger.info(
+            "Using deterministic local hashing embeddings. Set CHAINCHECK_USE_TRANSFORMER=1 "
+            "to opt into sentence-transformer embeddings."
+        )
+        return HashingTextEncoder(), "hashing-local"
+
+    try:
+        logger.info("Loading cached embedding model: %s", MODEL_NAME)
+        return SentenceTransformer(MODEL_NAME, device="cpu", local_files_only=True), MODEL_NAME
+    except TypeError:
+        try:
+            logger.info("Loading embedding model: %s", MODEL_NAME)
+            return SentenceTransformer(MODEL_NAME, device="cpu"), MODEL_NAME
+        except Exception as e:
+            logger.warning("Embedding model unavailable (%s). Falling back to local hashing.", e)
+            return HashingTextEncoder(), "hashing-local"
+    except Exception as e:
+        logger.warning("Cached embedding model unavailable (%s). Falling back to local hashing.", e)
+        return HashingTextEncoder(), "hashing-local"
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -326,26 +374,21 @@ def extract_from_patents(patent_json: dict, source_file: str) -> list[EntityReco
     return records
 
 
-# ── FAISS matching ────────────────────────────────────────────────────────────
+# ── Vector matching ───────────────────────────────────────────────────────────
 
-def build_faiss_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
-    """
-    Build a cosine-similarity FAISS index.
-    IndexFlatIP on L2-normalized vectors = cosine similarity.
-    """
-    dim = embeddings.shape[1]
-    index = faiss.IndexFlatIP(dim)
-    # L2-normalize so dot product = cosine similarity
-    faiss.normalize_L2(embeddings)
-    index.add(embeddings)
-    return index
+def normalize_rows(embeddings: np.ndarray) -> np.ndarray:
+    """L2-normalize rows so dot product is cosine similarity."""
+    normed = embeddings.astype("float32", copy=True)
+    norms = np.linalg.norm(normed, axis=1, keepdims=True)
+    np.divide(normed, norms, out=normed, where=norms != 0)
+    return normed
 
 
 def cross_domain_search(
     query_records: list[EntityRecord],
     query_embeddings: np.ndarray,
     target_records: list[EntityRecord],
-    target_index: faiss.IndexFlatIP,
+    target_embeddings: np.ndarray,
     top_k: int = TOP_K,
     threshold: float = SCORE_THRESH,
 ) -> list[EntityMatch]:
@@ -354,8 +397,15 @@ def cross_domain_search(
     Enforces cross-domain: query.domain != target.domain (checked upstream).
     """
     matches = []
-    faiss.normalize_L2(query_embeddings)
-    scores, indices = target_index.search(query_embeddings, top_k)
+    if query_embeddings.shape[0] == 0 or target_embeddings.shape[0] == 0:
+        return matches
+
+    query_normed = normalize_rows(query_embeddings)
+    target_normed = normalize_rows(target_embeddings)
+    k = min(top_k, len(target_records))
+    sim_matrix = query_normed @ target_normed.T
+    indices = np.argsort(-sim_matrix, axis=1)[:, :k]
+    scores = np.take_along_axis(sim_matrix, indices, axis=1)
 
     for i, (row_scores, row_indices) in enumerate(zip(scores, indices)):
         qr = query_records[i]
@@ -420,8 +470,7 @@ def resolve_entities(
         logger.warning("No patent entities — check patent_parser output")
 
     # ── 3. Embed all entity pools ──────────────────────────────────────────
-    logger.info("Loading embedding model: %s", MODEL_NAME)
-    model = SentenceTransformer(MODEL_NAME, device="cpu")
+    model, model_name = load_embedding_model()
 
     def embed(records: list[EntityRecord]) -> np.ndarray:
         texts = [r.normalized for r in records]
@@ -437,46 +486,31 @@ def resolve_entities(
     logger.info("Embedding patent entities (%d)...",    len(pat_records))
     pat_emb = embed(pat_records) if pat_records else np.zeros((0, 384), dtype="float32")
 
-    # ── 4. Build FAISS indexes for target domains ──────────────────────────
+    # ── 4. Run three cross-domain pairwise searches ────────────────────────
     all_matches: list[EntityMatch] = []
 
-    def safe_index(emb: np.ndarray) -> Optional[faiss.IndexFlatIP]:
-        if emb.shape[0] == 0:
-            return None
-        idx = faiss.IndexFlatIP(emb.shape[1])
-        normed = emb.copy()
-        faiss.normalize_L2(normed)
-        idx.add(normed)
-        return idx
-
-    cb_index  = safe_index(cb_emb)
-    pat_index = safe_index(pat_emb)
-    wp_index  = safe_index(wp_emb)
-
-    # ── 5. Run three cross-domain pairwise searches ────────────────────────
-
     # whitepaper → codebase
-    if wp_records and cb_index:
+    if wp_records and cb_records:
         logger.info("Matching whitepaper → codebase...")
-        m = cross_domain_search(wp_records, wp_emb.copy(), cb_records, cb_index, threshold=threshold)
+        m = cross_domain_search(wp_records, wp_emb, cb_records, cb_emb, threshold=threshold)
         logger.info("  Found %d matches", len(m))
         all_matches.extend(m)
 
     # whitepaper → patent
-    if wp_records and pat_index:
+    if wp_records and pat_records:
         logger.info("Matching whitepaper → patent...")
-        m = cross_domain_search(wp_records, wp_emb.copy(), pat_records, pat_index, threshold=threshold)
+        m = cross_domain_search(wp_records, wp_emb, pat_records, pat_emb, threshold=threshold)
         logger.info("  Found %d matches", len(m))
         all_matches.extend(m)
 
     # codebase → patent
-    if cb_records and pat_index:
+    if cb_records and pat_records:
         logger.info("Matching codebase → patent...")
-        m = cross_domain_search(cb_records, cb_emb.copy(), pat_records, pat_index, threshold=threshold)
+        m = cross_domain_search(cb_records, cb_emb, pat_records, pat_emb, threshold=threshold)
         logger.info("  Found %d matches", len(m))
         all_matches.extend(m)
 
-    # ── 6. Deduplicate and sort by score ──────────────────────────────────
+    # ── 5. Deduplicate and sort by score ──────────────────────────────────
     # Remove symmetric duplicates (A→B same as B→A)
     seen = set()
     deduped = []
@@ -491,13 +525,13 @@ def resolve_entities(
 
     logger.info("Total unique cross-domain matches: %d", len(deduped))
 
-    # ── 7. Write output ────────────────────────────────────────────────────
+    # ── 6. Write output ────────────────────────────────────────────────────
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output = {
         "metadata": {
             "total_matches": len(deduped),
             "threshold_used": threshold,
-            "model": MODEL_NAME,
+            "model": model_name,
             "sources": {
                 "whitepaper": str(whitepaper_path),
                 "codebase":   str(codebase_path),

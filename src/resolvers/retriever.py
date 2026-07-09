@@ -156,3 +156,4 @@ if __name__ == "__main__":
         print(f"  [{r['rank']}] source={r.get('source')}  score={r['similarity_score']:.4f}")
         print(f"       text={r.get('text', '')[:120]}")
     print("─" * 60)
+

@@ -1,4 +1,23 @@
-"""Small evaluation runner for retrieval Recall@K and question audit coverage."""
+"""
+eval_runner.py — ChainCheck Evaluation Harness
+===============================================
+Computes two metrics:
+  1. Recall@K          — does the retriever surface the right source node?
+  2. Audit Coverage    — what % of questions have an audit trail?
+
+Also does a keyword-overlap score against ground_truth.json when provided.
+
+Usage
+-----
+  # Questions evaluation only
+  python eval/eval_runner.py --questions data/processed/questions.json
+
+  # Full retrieval + question eval
+  python eval/eval_runner.py \\
+      --eval-queries eval/eval_queries.json \\
+      --questions    data/processed/questions.json \\
+      --ground-truth eval/ground_truth.json
+"""
 
 from __future__ import annotations
 
@@ -19,7 +38,7 @@ def evaluate_retrieval(
     data_dir: Path,
     ks: tuple[int, ...] = (1, 3, 5),
 ) -> dict:
-    """Evaluate Retriever results against query/source ground truth."""
+    """Evaluate Retriever Recall@K against labeled query/source ground truth."""
     from resolvers.retriever import Retriever
 
     eval_queries = json.loads(eval_queries_path.read_text(encoding="utf-8"))
@@ -36,7 +55,7 @@ def evaluate_retrieval(
 
 
 def evaluate_questions(questions_path: Path) -> dict:
-    """Evaluate generated question artifacts for minimal audit coverage."""
+    """Evaluate generated question artifacts for audit trail coverage."""
     data = json.loads(questions_path.read_text(encoding="utf-8"))
     questions = data.get("questions", [])
     return {
@@ -45,12 +64,66 @@ def evaluate_questions(questions_path: Path) -> dict:
     }
 
 
+def ground_truth_overlap(questions_path: Path, gt_path: Path) -> float:
+    """
+    Keyword overlap between generated questions and ground truth.
+    A generated question 'matches' a GT question if they share ≥2 words
+    of length ≥4. Returns the fraction of generated questions that match.
+    """
+    gen_data = json.loads(questions_path.read_text(encoding="utf-8"))
+    gt_data  = json.loads(gt_path.read_text(encoding="utf-8"))
+
+    gen_questions = [
+        (q.get("question") or q.get("generated_question") or "").lower()
+        for q in gen_data.get("questions", [])
+    ]
+    gt_questions = [
+        q["question"].lower()
+        for q in gt_data.get("questions", [])
+        if "question" in q
+    ]
+
+    if not gen_questions or not gt_questions:
+        return 0.0
+
+    overlap_count = 0
+    for gen_q in gen_questions:
+        gen_words = {w for w in gen_q.split() if len(w) >= 4}
+        for gt_q in gt_questions:
+            gt_words = {w for w in gt_q.split() if len(w) >= 4}
+            if len(gen_words & gt_words) >= 2:
+                overlap_count += 1
+                break
+
+    return round(overlap_count / len(gen_questions), 3)
+
+
+def print_results(results: dict) -> None:
+    print(f"\n{'═'*60}")
+    print("  CHAINCHECK EVAL RESULTS")
+    print(f"{'═'*60}")
+    for k, v in results.items():
+        if isinstance(v, float):
+            print(f"  {k:<35} {v:.3f}")
+        elif isinstance(v, dict):
+            print(f"  {k}:")
+            for kk, vv in v.items():
+                fmt = f"{vv:.3f}" if isinstance(vv, float) else str(vv)
+                print(f"    {kk:<33} {fmt}")
+        else:
+            print(f"  {k:<35} {v}")
+    print(f"{'═'*60}\n")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run VC due-diligence evaluation checks")
-    parser.add_argument("--data-dir", default="data/processed")
-    parser.add_argument("--eval-queries", default=None)
-    parser.add_argument("--questions", default=None)
-    parser.add_argument("--output", default="data/processed/eval_results.json")
+    parser = argparse.ArgumentParser(description="ChainCheck evaluation runner")
+    parser.add_argument("--data-dir",     default="data/processed")
+    parser.add_argument("--eval-queries", default=None,
+                        help="Path to eval_queries.json for Recall@K")
+    parser.add_argument("--questions",    default=None,
+                        help="Path to generated questions.json")
+    parser.add_argument("--ground-truth", default="eval/ground_truth.json")
+    parser.add_argument("--output",       default="data/processed/eval_results.json")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -58,13 +131,20 @@ def main() -> None:
 
     if args.eval_queries:
         results["retrieval"] = evaluate_retrieval(Path(args.eval_queries), data_dir)
+
     if args.questions:
-        results["questions"] = evaluate_questions(Path(args.questions))
+        q_path = Path(args.questions)
+        results.update(evaluate_questions(q_path))
+
+        gt_path = Path(args.ground_truth)
+        if gt_path.exists():
+            results["ground_truth_overlap"] = ground_truth_overlap(q_path, gt_path)
+
+    print_results(results)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-    print(json.dumps(results, indent=2))
 
 
 if __name__ == "__main__":

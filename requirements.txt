@@ -5,6 +5,7 @@
 sentence-transformers>=2.7.0   # all-MiniLM-L6-v2 for knowledge_fusion.py
 faiss-cpu>=1.8.0               # IndexFlatIP for O(n log n) cosine bridging
 numpy>=1.26.0
+spacy>=3.6.0                   # NLP library; run 'python -m spacy download en_core_web_sm' to install model
 
 # ── Graph ──────────────────────────────────────────────────────────────────────
 networkx>=3.3                  # knowledge graph + BFS path reasoning

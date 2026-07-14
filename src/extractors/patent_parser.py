@@ -32,16 +32,25 @@ from typing import Optional
 # ── Optional spaCy (falls back to rule-based NP extraction) ──────────────────
 try:
     import spacy
-    _NLP = spacy.load("en_core_web_sm")
-    _SPACY_FULL = True
-except OSError:
-    import spacy
-    _NLP = spacy.blank("en")
-    _NLP.add_pipe("sentencizer")
+    try:
+        _NLP = spacy.load("en_core_web_sm")
+        _SPACY_FULL = True
+    except OSError:
+        # Model missing — use blank pipeline with sentencizer for sentence splitting
+        _NLP = spacy.blank("en")
+        _NLP.add_pipe("sentencizer")
+        _SPACY_FULL = False
+        logging.warning(
+            "en_core_web_sm not found — using blank spaCy + rule-based NP extraction. "
+            "Run 'python -m spacy download en_core_web_sm' for higher accuracy."
+        )
+except ImportError:
+    # spaCy not installed at all — fall back to regex-based sentence splitting
+    _NLP = None
     _SPACY_FULL = False
     logging.warning(
-        "en_core_web_sm not found — using blank spaCy + rule-based NP extraction. "
-        "Run 'python -m spacy download en_core_web_sm' for higher accuracy."
+        "spaCy not installed — using regex sentence splitting + rule-based NP extraction. "
+        "Install spaCy and en_core_web_sm for higher accuracy."
     )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

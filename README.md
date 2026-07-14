@@ -18,7 +18,6 @@ commercial product.
 This checkout contains the final merged ChainCheck pipeline:
 
 - A root-level 14-stage orchestrator: `pipeline.py`
-- A Streamlit dashboard: `dashboard.py`
 - Cross-domain semantic graph fusion in `src/graph/knowledge_fusion.py`
 - Multi-hop path reasoning and contradiction detection in `src/reasoning/`
 - Unified legal, patent, license, and confidence scoring in
@@ -67,13 +66,7 @@ python pipeline.py \
 ```
 
 `--dry-run` skips paid/network LLM calls and uses template-style generated
-questions. After a run, launch the dashboard:
-
-```bash
-streamlit run dashboard.py
-```
-
-The dashboard reads directly from `data/processed/`.
+questions.
 
 ---
 
@@ -169,7 +162,6 @@ All stage outputs are written to `data/processed/`.
 ```text
 .
 ├── pipeline.py
-├── dashboard.py
 ├── requirements.txt
 ├── pytest.ini
 ├── data/

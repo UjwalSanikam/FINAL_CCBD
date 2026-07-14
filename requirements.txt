@@ -28,8 +28,6 @@ lxml>=5.2.0
 packaging>=24.0                # version parsing in github_parser.py
 toml>=0.10.2                   # pyproject.toml parsing
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
-streamlit>=1.36.0              # dashboard.py
 
 # ── Dev / Testing ─────────────────────────────────────────────────────────────
 pytest>=8.2.0

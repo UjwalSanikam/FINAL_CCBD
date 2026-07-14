@@ -52,7 +52,11 @@ from pathlib import Path
 
 import networkx as nx
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -177,6 +181,8 @@ class KnowledgeFusionPipeline:
 
         try:
             logger.info("Loading cached sentence-transformer model: %s", _MODEL_NAME)
+            if SentenceTransformer is None:
+                raise ImportError("sentence-transformers is not installed")
             return SentenceTransformer(_MODEL_NAME, local_files_only=True)
         except TypeError:
             try:

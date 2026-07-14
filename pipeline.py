@@ -628,7 +628,8 @@ def main():
     elapsed = time.time() - start_time
     timer.print_report()
     _print_pipeline_summary(results, elapsed)
+    return 0 if all(results.values()) else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChainCheck</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="mark">C</div>
+          <div>
+            <h1>ChainCheck</h1>
+            <p id="rootPath">Loading project...</p>
+          </div>
+        </div>
+
+        <nav class="tabs" aria-label="Views">
+          <button class="tab active" data-view="overview">Overview</button>
+          <button class="tab" data-view="questions">Questions</button>
+          <button class="tab" data-view="risks">Risks</button>
+          <button class="tab" data-view="artifacts">Artifacts</button>
+        </nav>
+
+        <section class="run-panel">
+          <div class="section-title">
+            <h2>Run Pipeline</h2>
+            <span id="jobState" class="pill">Idle</span>
+          </div>
+
+          <label>
+            Pitch deck
+            <input id="pitchInput" type="text" spellcheck="false">
+          </label>
+          <label>
+            Repository
+            <input id="repoInput" type="text" spellcheck="false">
+          </label>
+          <label>
+            Patents
+            <input id="patentsInput" type="text" spellcheck="false">
+          </label>
+
+          <div class="field-row">
+            <label>
+              Start
+              <input id="startStageInput" type="number" min="1" max="14" value="1">
+            </label>
+            <label>
+              End
+              <input id="endStageInput" type="number" min="1" max="14" value="14">
+            </label>
+            <label>
+              Max Qs
+              <input id="maxQuestionsInput" type="number" min="1" value="10">
+            </label>
+          </div>
+
+          <div class="field-row">
+            <label>
+              Fusion
+              <input id="fusionInput" type="number" min="0" max="1" step="0.01" value="0.40">
+            </label>
+            <label>
+              Resolver
+              <input id="resolverInput" type="number" min="0" max="1" step="0.01" value="0.45">
+            </label>
+          </div>
+
+          <label>
+            Provider
+            <select id="providerInput">
+              <option value="anthropic">Anthropic</option>
+              <option value="ollama" selected>Ollama</option>
+            </select>
+          </label>
+
+          <label>
+            Model
+            <input id="modelInput" type="text" spellcheck="false" value="phi3:latest" placeholder="auto">
+          </label>
+
+          <label class="check">
+            <input id="dryRunInput" type="checkbox">
+            <span>Dry run</span>
+          </label>
+
+          <button id="runButton" class="primary">Run</button>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <section id="overview" class="view active-view">
+          <div class="topbar">
+            <div>
+              <h2>Deal Intelligence</h2>
+              <p id="dealLine">Current processed run</p>
+            </div>
+            <button id="refreshButton" class="secondary">Refresh</button>
+          </div>
+
+          <div class="runtime-bar">
+            <div>
+              <span>Python</span>
+              <strong id="pythonRuntime">-</strong>
+            </div>
+            <div>
+              <span>spaCy</span>
+              <strong id="spacyRuntime">-</strong>
+            </div>
+            <div>
+              <span>Embeddings</span>
+              <strong id="embeddingRuntime">-</strong>
+            </div>
+            <div>
+              <span>Ollama</span>
+              <strong id="ollamaRuntime">-</strong>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric">
+              <span>Claims</span>
+              <strong id="claimsMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>Graph</span>
+              <strong id="graphMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>Risks</span>
+              <strong id="risksMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>Questions</span>
+              <strong id="questionsMetric">-</strong>
+            </article>
+          </div>
+
+          <section class="split">
+            <article class="panel">
+              <div class="section-title">
+                <h3>Latest Run Log</h3>
+                <span id="exitCode" class="pill">No run</span>
+              </div>
+              <pre id="logOutput" class="log"></pre>
+            </article>
+            <article class="panel">
+              <div class="section-title">
+                <h3>Processed Artifacts</h3>
+              </div>
+              <div id="artifactList" class="artifact-list"></div>
+            </article>
+          </section>
+        </section>
+
+        <section id="questions" class="view">
+          <div class="topbar">
+            <div>
+              <h2>Generated Questions</h2>
+              <p>LLM or deterministic fallback output</p>
+            </div>
+          </div>
+          <div id="questionList" class="list"></div>
+        </section>
+
+        <section id="risks" class="view">
+          <div class="topbar">
+            <div>
+              <h2>Risk Report</h2>
+              <p>Ranked VC diligence signals</p>
+            </div>
+          </div>
+          <div id="riskList" class="list"></div>
+        </section>
+
+        <section id="artifacts" class="view">
+          <div class="topbar">
+            <div>
+              <h2>Artifact Browser</h2>
+              <p>Generated JSON outputs</p>
+            </div>
+            <select id="artifactSelect"></select>
+          </div>
+          <pre id="artifactPreview" class="json-preview"></pre>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -30,7 +30,10 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-from sentence_transformers import SentenceTransformer
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -109,6 +112,8 @@ def load_embedding_model():
 
     try:
         logger.info("Loading cached embedding model: %s", MODEL_NAME)
+        if SentenceTransformer is None:
+            raise ImportError("sentence-transformers is not installed")
         return SentenceTransformer(MODEL_NAME, device="cpu", local_files_only=True), MODEL_NAME
     except TypeError:
         try:

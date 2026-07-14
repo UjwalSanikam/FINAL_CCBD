@@ -76,6 +76,23 @@ def clean_patent_text(raw: str) -> str:
     return text
 
 
+def _split_sentences_regex(text: str) -> list[str]:
+    """Fallback sentence splitter used when spaCy is not installed."""
+    if not text:
+        return []
+
+    # Protect common patent/document abbreviations before splitting on
+    # sentence punctuation. This keeps the no-spaCy path deterministic while
+    # avoiding the worst false splits around "FIG.", "No.", and "U.S.".
+    protected = re.sub(
+        r"\b(FIG|Fig|No|Nos|U\.S|US|e\.g|i\.e)\.",
+        lambda m: m.group(0).replace(".", "<DOT>"),
+        text,
+    )
+    chunks = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", protected)
+    return [chunk.replace("<DOT>", ".").strip() for chunk in chunks if chunk.strip()]
+
+
 def split_into_sections(raw: str) -> dict:
     # strip the "PATENT ID: XXXX" line — it has inline content so it won't
     # match the header pattern below, and would otherwise leak into
@@ -146,10 +163,13 @@ def get_artefact_sentences(raw: str) -> list:
         kept.append(content)
 
     cleaned = clean_patent_text(" ".join(kept))
-    doc = _NLP(cleaned)
+    if _NLP is None:
+        candidate_sentences = _split_sentences_regex(cleaned)
+    else:
+        candidate_sentences = [sent.text.strip() for sent in _NLP(cleaned).sents]
+
     sentences = []
-    for sent in doc.sents:
-        text = sent.text.strip()
+    for text in candidate_sentences:
         wc = len(text.split())
         if 3 <= wc <= 100:   # paper §3.1: retain sentences ≤100 words
             sentences.append(text)

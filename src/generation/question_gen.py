@@ -261,16 +261,30 @@ the founder about this evidence chain."""
 
 # ── Template fallback ─────────────────────────────────────────────────────────
 
+def _clean_snippet(text: str, limit: int = 140) -> str:
+    """Return a compact, word-boundary-safe snippet for deterministic questions."""
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= limit:
+        return compact
+    trimmed = compact[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{trimmed}..."
+
+
+def _article_for(text: str) -> str:
+    return "an" if str(text).strip().lower()[:1] in {"a", "e", "i", "o", "u"} else "a"
+
+
 def _template_question(chain: dict, source_format: str) -> str:
     """Generate a deterministic fallback question when LLM is unavailable."""
     if source_format == "structured_evidence":
-        claim  = chain.get("claim_text", chain.get("claim_id", "unknown claim"))[:100]
+        claim  = _clean_snippet(chain.get("claim_text", chain.get("claim_id", "unknown claim")))
         rtype  = chain.get("risk_type", "IP risk")
         node   = chain.get("risk_node", "an external component")
         return (
-            f"You claim '{claim}', yet our analysis identified a {rtype} "
-            f"involving '{node}'. Can you explain your legal strategy and "
-            f"how you have validated that this does not create liability at scale?"
+            f"Your pitch claims '{claim}', but our evidence graph links that claim "
+            f"to {_article_for(rtype)} {rtype} signal involving '{node}'. What "
+            f"freedom-to-operate review, claim-chart analysis, or licensing strategy "
+            f"supports commercial deployment without infringement exposure?"
         )
     else:
         # hop_chain format

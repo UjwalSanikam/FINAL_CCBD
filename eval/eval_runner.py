@@ -1,30 +1,11 @@
-"""
-eval_runner.py — ChainCheck Evaluation Harness
-===============================================
-Computes two metrics:
-  1. Recall@K          — does the retriever surface the right source node?
-  2. Audit Coverage    — what % of questions have an audit trail?
-
-Also does a keyword-overlap score against ground_truth.json when provided.
-
-Usage
------
-  # Questions evaluation only
-  python eval/eval_runner.py --questions data/processed/questions.json
-
-  # Full retrieval + question eval
-  python eval/eval_runner.py \\
-      --eval-queries eval/eval_queries.json \\
-      --questions    data/processed/questions.json \\
-      --ground-truth eval/ground_truth.json
-"""
-
-from __future__ import annotations
-
-import argparse
-import json
-import sys
-import re
+    overlap_count = 0
+    for gen_q in gen_questions:
+        gen_words = {w for w in gen_q.split() if len(w) >= 4}
+        for gt_q in gt_questions:
+            gt_words = {w for w in gt_q.split() if len(w) >= 4}
+            if len(gen_words & gt_words) >= 2:
+                overlap_count += 1
+                break
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

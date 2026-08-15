@@ -183,17 +183,27 @@ class KnowledgeFusionPipeline:
             logger.info("Loading cached sentence-transformer model: %s", _MODEL_NAME)
             if SentenceTransformer is None:
                 raise ImportError("sentence-transformers is not installed")
-            return SentenceTransformer(_MODEL_NAME, local_files_only=True)
+            # Force CPU: this GPU's compute capability is older than what the
+            # installed torch build has kernels for, causing a hard CUDA crash
+            # ("no kernel image is available") the moment .encode() is called.
+            # CPU is plenty fast for this small model on a few hundred short strings.
+            return SentenceTransformer(_MODEL_NAME, local_files_only=True, device="cpu")
         except TypeError:
             try:
                 logger.info("Loading sentence-transformer model: %s", _MODEL_NAME)
-                return SentenceTransformer(_MODEL_NAME)
+                return SentenceTransformer(_MODEL_NAME, device="cpu")
             except Exception as e:
                 logger.warning(
                     "Sentence-transformer unavailable (%s). Using deterministic local hashing embeddings.",
                     e,
                 )
                 return _HashingTextEncoder()
+        except Exception as e:
+            logger.warning(
+                "Cached sentence-transformer unavailable (%s). Using deterministic local hashing embeddings.",
+                e,
+            )
+            return _HashingTextEncoder()
         except Exception as e:
             logger.warning(
                 "Cached sentence-transformer unavailable (%s). Using deterministic local hashing embeddings.",
@@ -371,6 +381,12 @@ class KnowledgeFusionPipeline:
         Adds OpenSource_License / LicenceType nodes so hop_reasoner can flag
         commercial-use violations as a separate risk signal.
         Skips silently if license_knowledge.json does not exist.
+
+        Modules whose license lookup failed ("UNKNOWN (Requires Manual
+        Review)") are intentionally NOT added as edges into a shared graph
+        node. That string is a data gap, not a risk finding — fusing ~140
+        unrelated dependencies onto one node made every one of them
+        reachable from any claim, producing meaningless reasoning chains.
         """
         license_path = self.data_dir / "processed" / "license_knowledge.json"
         if not license_path.exists():
@@ -378,11 +394,16 @@ class KnowledgeFusionPipeline:
             return
 
         license_data = json.loads(license_path.read_text(encoding="utf-8"))
-        loaded       = 0
+        loaded = 0
+        skipped_unknown = 0
 
         for entry in license_data.get("licenses", []):
             lic_node = entry["license"]
             module   = entry["module"]
+
+            if lic_node.startswith("UNKNOWN"):
+                skipped_unknown += 1
+                continue
 
             if lic_node not in self.G:
                 self.G.add_node(
@@ -404,7 +425,10 @@ class KnowledgeFusionPipeline:
                 weight       = 1.0,    # deterministic match — full weight
             )
 
-        logger.info("Track 4: loaded %d license nodes", loaded)
+        logger.info(
+            "Track 4: loaded %d license nodes (%d dependencies skipped — unresolved license, not fused)",
+            loaded, skipped_unknown,
+        )
 
     # =========================================================================
     # SEMANTIC BRIDGE LAYERS  (FAISS-accelerated)

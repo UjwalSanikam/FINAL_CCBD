@@ -24,7 +24,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 DATA_DIR = PROJECT_ROOT / "data"
 PROCESSED_DIR = DATA_DIR / "processed"
 
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT = 8765
 DEFAULT_PROVIDER = "ollama"
 DEFAULT_OLLAMA_MODEL = "phi3:latest"

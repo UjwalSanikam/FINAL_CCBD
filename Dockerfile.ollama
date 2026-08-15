@@ -1,0 +1,15 @@
+FROM ollama/ollama:latest
+
+# Bake phi3 into the image at build time so `docker compose up`
+# never needs to pull it again. We start the daemon in the background,
+# wait for it to be ready, pull the model into /root/.ollama, then let the
+# build layer capture those files.
+RUN ( ollama serve & ) \
+    && sleep 5 \
+    && ollama pull phi3:latest \
+    && pkill ollama \
+    && sleep 2
+
+EXPOSE 11434
+
+ENTRYPOINT ["ollama", "serve"]

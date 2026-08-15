@@ -319,6 +319,13 @@ def print_summary(chains: list[HopChain]) -> None:
         print(f"     edges: {' → '.join(chain.path_edges)}")
     print(f"{'═'*70}\n")
 
+# Edge types backed by ground truth (static analysis / deterministic parsing).
+# These are facts about the repo, not guesses.
+_VERIFIED_EDGE_TYPES = {"IMPORTS", "LICENCED_UNDER"}
+
+# Edge types produced by embedding cosine similarity. These are hypotheses —
+# two strings looked similar to the encoder — not confirmed relationships.
+_INFERRED_EDGE_TYPES = {"IMPLEMENTED_BY", "SIMILAR_TO", "REQUIRES_IP_REVIEW"}
 
 class DynamicPathReasoner:
     """
@@ -335,9 +342,15 @@ class DynamicPathReasoner:
         self.load_graph()
 
     def _resolve_graph_path(self) -> Path:
-        kg_path = self.data_dir / "processed" / "kg.json"
+        # Prefer the full fused graph — built from ALL codebase/dependency
+        # nodes plus the FAISS bridge layers — over kg.json, which only
+        # contains the sparse subset of nodes that entity_resolver happened
+        # to cross-match. Using kg.json here silently drops most of the
+        # evidence graph (e.g. colbert-ai, sentence-transformers chains)
+        # even when those nodes and edges genuinely exist.
         fused_path = self.data_dir / "processed" / "fused_knowledge_graph.json"
-        return kg_path if kg_path.exists() else fused_path
+        kg_path = self.data_dir / "processed" / "kg.json"
+        return fused_path if fused_path.exists() else kg_path
 
     def load_graph(self) -> None:
         graph_path = self._resolve_graph_path()
@@ -358,15 +371,58 @@ class DynamicPathReasoner:
         )
 
     def calculate_path_confidence(self, path: list[str]) -> float:
-        """Calculate confidence from edge weights/similarity with path decay."""
+        """
+        Calculate confidence from edge weights/similarity with path decay.
+
+        Verified edges (IMPORTS, LICENCED_UNDER) are ground truth from static
+        analysis, so they contribute full confidence (1.0) rather than a
+        default guess. Inferred edges (embedding-similarity bridges) fall
+        back to 0.5 — not 0.95 — when no similarity/weight is recorded, since
+        an untagged inferred edge should not be treated as near-certain.
+        """
         base_confidence = 1.0
         for i in range(len(path) - 1):
             edge_data = self.G.get_edge_data(path[i], path[i + 1], default={})
-            sim_score = edge_data.get("similarity", edge_data.get("weight", 0.95))
+            edge_type = edge_data.get("edge_type", "unknown")
+
+            if edge_type in _VERIFIED_EDGE_TYPES:
+                sim_score = 1.0
+            else:
+                sim_score = edge_data.get("similarity", edge_data.get("weight", 0.5))
+
             base_confidence *= sim_score
 
         length_penalty = 0.9 ** max(len(path) - 2, 0)
         return round(base_confidence * length_penalty, 3)
+
+    def classify_path_relationship(self, path: list[str]) -> str:
+        """
+        Returns 'verified' only if every edge in the path is a structural
+        fact (import graph, deterministic license match). Returns 'inferred'
+        if the path depends on at least one embedding-similarity bridge edge
+        — the path is only as trustworthy as its weakest edge.
+        """
+        for i in range(len(path) - 1):
+            edge_data = self.G.get_edge_data(path[i], path[i + 1], default={})
+            edge_type = edge_data.get("edge_type", "unknown")
+            if edge_type not in _VERIFIED_EDGE_TYPES:
+                return "inferred"
+        return "verified"
+
+    def _dominant_bridge_edge(self, path: list[str]) -> tuple[str, str] | None:
+        """
+        Returns the first inferred (embedding-similarity) edge in the path,
+        or None if the path is fully verified. This is the actual "evidence"
+        an inferred chain rests on — two chains sharing this same edge are
+        the same underlying finding wearing different terminal nodes, and
+        should not be presented to the user as separate risks.
+        """
+        for i in range(len(path) - 1):
+            edge_data = self.G.get_edge_data(path[i], path[i + 1], default={})
+            edge_type = edge_data.get("edge_type", "unknown")
+            if edge_type in _INFERRED_EDGE_TYPES:
+                return (path[i], path[i + 1])
+        return None
 
     def _node_role(self, node_id: str) -> str:
         """
@@ -382,6 +438,31 @@ class DynamicPathReasoner:
         """
         attrs = self.G.nodes[node_id]
         return attrs.get("node_type") or attrs.get("label") or ""
+
+    def _path_has_patent_node(self, path: list[str]) -> bool:
+        """
+        True only if the path reaches a Patent/Patent_Concept node through a
+        VERIFIED edge — never a semantic-similarity bridge (SIMILAR_TO,
+        REQUIRES_IP_REVIEW, IMPLEMENTED_BY). Every current patent bridge in
+        this pipeline is an embedding-similarity match against extracted
+        patent-sentence fragments, not confirmed technical overlap. Node-type
+        presence alone is not sufficient evidence of a genuine patent
+        relationship — a patent-typed node reached only via SIMILAR_TO is,
+        at most, patent relevance, never patent overlap.
+        """
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i + 1]
+            if self._node_role(v) in {"Patent_Concept", "Patent"}:
+                edge_data = self.G.get_edge_data(u, v, default={})
+                edge_type = edge_data.get("edge_type", "unknown")
+                if edge_type in _VERIFIED_EDGE_TYPES:
+                    return True
+        return False
+
+    def _path_has_license_node(self, path: list[str]) -> bool:
+        """True only if an actual License/LicenceType-typed node appears
+        somewhere in this path."""
+        return any(self._node_role(n) in {"OpenSource_License", "LicenceType"} for n in path)
 
     def discover_evidence_chains(self, max_depth: int = 4, per_pair_limit: int = 50) -> list[dict]:
         """
@@ -419,8 +500,27 @@ class DynamicPathReasoner:
 
                 for path in paths:
                     risk_role = self._node_role(risk_node)
+                    intermediate_nodes = path[1:-1]  # excludes claim and terminal risk_node
+                    routes_through_dependency = any(
+                        self._node_role(n) in {"Library", "Code_Module", "Software_Dependency"}
+                        for n in intermediate_nodes
+                    )
+                    has_patent = self._path_has_patent_node(path)
+
                     if risk_role in {"Patent_Concept", "Patent"}:
-                        risk_type = "IP Overlap"
+                        # Conservative patent classification: a real patent
+                        # node (verified edge) is required for genuine
+                        # overlap. Without one, a patent-flagged terminal
+                        # node reached only via a dependency/module hop is an
+                        # architecture question, not a patent question — and
+                        # reached with no dependency hop at all, it's at most
+                        # "relevance," never "overlap."
+                        if has_patent:
+                            risk_type = "Patent Overlap"
+                        elif routes_through_dependency:
+                            risk_type = "Architectural Dependency"
+                        else:
+                            risk_type = "Patent Relevance"
                     elif risk_role in {"OpenSource_License", "LicenceType"}:
                         risk_type = "Commercial License"
                     else:
@@ -437,16 +537,170 @@ class DynamicPathReasoner:
                         ),
                         "risk_node": risk_node,
                         "risk_type": risk_type,
+                        "relationship": self.classify_path_relationship(path),
+                        "has_patent_node": has_patent,
+                        "has_licence_conflict": self._path_has_license_node(path),
+                        "routes_through_dependency": routes_through_dependency,
                         "path_length": len(path) - 1,
                         "confidence_score": self.calculate_path_confidence(path),
                         "reasoning_path": path,
                     })
 
         evidence_objects.sort(key=lambda x: x["confidence_score"], reverse=True)
-        return evidence_objects
+
+        # ── Dedupe by (claim, risk_node): prefer evidence-rich paths ──────
+        # Multiple paths can reach the same claim → risk_node pair. Instead
+        # of keeping whichever has the highest raw confidence (which
+        # rewards short, evidence-free hops), keep the one that passes
+        # through the most Library/Code_Module nodes — i.e. the path
+        # backed by actual dependency/source-code evidence, not just
+        # embedding similarity.
+        def _evidence_hop_count(path: list[str]) -> int:
+            return sum(
+                1 for node_id in path
+                if self._node_role(node_id) in {"Library", "Code_Module", "Software_Dependency"}
+            )
+
+        best_per_pair: dict[tuple[str, str], dict] = {}
+        for obj in evidence_objects:
+            key = (obj["claim_id"], obj["risk_node"])
+            evidence_hops = _evidence_hop_count(obj["reasoning_path"])
+            obj["_evidence_hops"] = evidence_hops
+            current_best = best_per_pair.get(key)
+            if current_best is None:
+                best_per_pair[key] = obj
+            else:
+                # More evidence hops wins outright; ties broken by confidence
+                if (evidence_hops, obj["confidence_score"]) > (
+                    current_best["_evidence_hops"], current_best["confidence_score"]
+                ):
+                    best_per_pair[key] = obj
+
+        deduped = list(best_per_pair.values())
+        for obj in deduped:
+            obj.pop("_evidence_hops", None)
+        deduped.sort(key=lambda x: x["confidence_score"], reverse=True)
+
+        # ── Second dedup pass: collapse chains sharing the same dominant
+        # inferred edge. Without this, one embedding-similarity coincidence
+        # (e.g. "rank-bm25" ~ "Reciprocal Rank Fusion - BM25") can fan out
+        # through the graph into many terminal nodes, each looking like an
+        # independent finding when it's really one guess repeated.
+        # Fully-verified chains (no inferred edge at all) always pass through.
+        seen_bridges: dict[tuple, dict] = {}
+        final: list[dict] = []
+        for obj in deduped:
+            bridge = self._dominant_bridge_edge(obj["reasoning_path"])
+            if bridge is None:
+                final.append(obj)
+                continue
+            key = (obj["claim_id"], bridge)
+            current_best = seen_bridges.get(key)
+            if current_best is None or obj["confidence_score"] > current_best["confidence_score"]:
+                seen_bridges[key] = obj
+
+        final.extend(seen_bridges.values())
+        final.sort(key=lambda x: x["confidence_score"], reverse=True)
+
+        return final
+
+    def discover_dependency_chains(self, max_depth: int = 2, per_pair_limit: int = 20) -> list[dict]:
+        """
+        Find simple paths from claims directly to dependency/module nodes —
+        independent of whether that dependency also happens to bridge onward
+        to a patent or license node.
+
+        Root-cause fix: discover_evidence_chains only ever searches for
+        claim → risk_node paths where risk_node is Patent- or License-typed.
+        That means risk_type can structurally only ever come out as
+        "IP Overlap" or "Commercial License" — a real, direct, high-confidence
+        signal like "claim_0004 → rank-bm25" (the claim denies this exact
+        dependency) never becomes its own evidence object; it only ever
+        appears as a prefix of a longer chain hunting for a patent endpoint.
+        This method gives dependency-terminal evidence a first-class object.
+        """
+        logger.info("Discovering dependency evidence chains (max depth=%d)", max_depth)
+        claims = [
+            n for n, d in self.G.nodes(data=True)
+            if d.get("label") == "Marketing_Claim" or d.get("node_type") == "Claim"
+        ]
+        dependency_nodes = [
+            n for n, d in self.G.nodes(data=True)
+            if d.get("label") in {"Software_Dependency", "Code_Module"}
+            or d.get("node_type") == "Library"
+        ]
+
+        evidence_objects: list[dict] = []
+        for claim in claims:
+            for dep_node in dependency_nodes:
+                try:
+                    paths = list(itertools.islice(
+                        nx.all_simple_paths(
+                            self.G,
+                            source=claim,
+                            target=dep_node,
+                            cutoff=max_depth,
+                        ),
+                        per_pair_limit,
+                    ))
+                except (nx.NodeNotFound, nx.NetworkXError, nx.NetworkXNoPath):
+                    continue
+
+                for path in paths:
+                    claim_attrs = self.G.nodes[claim]
+                    evidence_objects.append({
+                        "claim_id": claim,
+                        "claim_text": (
+                            claim_attrs.get("full_text")
+                            or claim_attrs.get("text")
+                            or claim_attrs.get("label")
+                            or claim
+                        ),
+                        "risk_node": dep_node,
+                        "risk_type": "Dependency",
+                        "relationship": self.classify_path_relationship(path),
+                        "has_patent_node": self._path_has_patent_node(path),
+                        "has_licence_conflict": self._path_has_license_node(path),
+                        "path_length": len(path) - 1,
+                        "confidence_score": self.calculate_path_confidence(path),
+                        "reasoning_path": path,
+                    })
+
+        # Dedupe by (claim, dependency node): keep the highest-confidence path.
+        best_per_pair: dict[tuple[str, str], dict] = {}
+        for obj in evidence_objects:
+            key = (obj["claim_id"], obj["risk_node"])
+            current_best = best_per_pair.get(key)
+            if current_best is None or obj["confidence_score"] > current_best["confidence_score"]:
+                best_per_pair[key] = obj
+
+        deduped = list(best_per_pair.values())
+        deduped.sort(key=lambda x: x["confidence_score"], reverse=True)
+        logger.info("Dependency chains: %d found", len(deduped))
+        return deduped
+
+    def discover_all_evidence_chains(self) -> list[dict]:
+        """
+        Combines dependency-terminal evidence (claim → dependency, no patent
+        or license endpoint required) with the original patent/license-terminal
+        evidence. This is what fixes risk_type collapsing to "IP Overlap" for
+        every chain: DEPENDENCY-shaped evidence now gets its own objects
+        instead of only ever appearing as a prefix of a patent/license search.
+        """
+        dependency_chains = self.discover_dependency_chains()
+        patent_license_chains = self.discover_evidence_chains()
+
+        combined = dependency_chains + patent_license_chains
+        combined.sort(key=lambda x: x["confidence_score"], reverse=True)
+
+        logger.info(
+            "Combined evidence: %d dependency-terminal + %d patent/license-terminal = %d total",
+            len(dependency_chains), len(patent_license_chains), len(combined),
+        )
+        return combined
 
     def export_evidence(self) -> list[dict]:
-        evidence_chains = self.discover_evidence_chains()
+        evidence_chains = self.discover_all_evidence_chains()
         output_path = self.data_dir / "processed" / "structured_evidence.json"
         output_path.write_text(
             json.dumps({"evidence_objects": evidence_chains}, indent=2),

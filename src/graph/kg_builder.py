@@ -326,9 +326,22 @@ def build_knowledge_graph(matches_path: Path, whitepaper_path: Path | None = Non
             skipped += 1
             continue
 
+        # ── Reject unverified claim↔patent shortcuts ─────────────────────
+        # A claim and a patent being semantically similar is a candidate
+        # signal, not proof of a relationship (see knowledge_fusion.py
+        # improvement notes). Without codebase/library evidence in between,
+        # this pair does NOT get a direct graph edge — only a real
+        # Claim → Library → Patent chain should let path_reasoner connect
+        # a marketing claim to a patent.
+        pair = tuple(sorted([domain_a, domain_b]))
+        if pair == ("patent", "whitepaper"):
+            skipped += 1
+            continue
+
         # ── Add typed edge ───────────────────────────────────────────────
         edge_type = infer_edge_type(domain_a, domain_b, score)
 
+        
         if G.has_edge(node_id_a, node_id_b):
             edge_data = G[node_id_a][node_id_b]
             # Always append this match to the full contributing-evidence list

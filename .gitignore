@@ -4,6 +4,12 @@ venv/
 __pycache__/
 *.pyc
 
+# Runtime/model/cache artifacts
+.hf_download_ve/
+.hf_cache/
+data/.hf_cache/
+.env
+
 # Data & Storage (Crucial for CCBD projects)
 data/raw/*
 !data/raw/.gitkeep
@@ -18,7 +24,6 @@ data/raw/repositories/*
 !data/raw/repositories/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
-.env
 
 # IDEs and OS
 .vscode/

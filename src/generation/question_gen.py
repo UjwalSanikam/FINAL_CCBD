@@ -42,6 +42,8 @@ import urllib.request
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
+import re
+from collections import defaultdict
 
 logging.basicConfig(
     level=logging.INFO,
@@ -196,26 +198,112 @@ def _call_llm(prompt: str, provider: str, model: str) -> str:
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
+_RELATIONSHIP_INSTRUCTIONS = {
+    "CONTRADICTS": (
+        "This is a CONTRADICTION. The pitch deck explicitly denies reliance on "
+        "third-party/open-source technology, but the evidence shows exactly that "
+        "dependency in use. Ask the founder to reconcile the specific denial with "
+        "the specific dependency found — name both directly."
+    ),
+    "PRIOR_ART": (
+        "This is an ACADEMIC PRIOR ART risk. The pitch claims in-house/original "
+        "development, but the evidence shows a dependency that implements a "
+        "previously published technique. Ask whether this prior art was disclosed "
+        "or considered, not whether infringement occurred."
+    ),
+    "PATENT_OVERLAP": (
+        "This is a PATENT OVERLAP risk. Ask a claim-element-specific question about "
+        "how the implementation compares to the patent's actual claims, not a vague "
+        "'does this infringe' question."
+    ),
+    "LICENSE": (
+        "This is a LICENSE risk. Ask specifically about license obligations of the "
+        "named dependency and how they interact with the startup's IP ownership claims."
+    ),
+    "DEPENDENCY": (
+        "This is a general dependency-risk finding. Ask what the dependency is used "
+        "for and what the commercialization/maintenance implications are."
+    ),
+    "ARCHITECTURAL_DEPENDENCY": (
+        "This is an ARCHITECTURAL DEPENDENCY, not a confirmed patent risk. The "
+        "path reaches a patent-flagged node only via a weak semantic bridge from "
+        "a real code dependency/module — not through direct patent claim evidence. "
+        "Ask what role this dependency actually plays in the architecture and "
+        "whether the pitch's proprietary/in-house framing is accurate for this "
+        "component. Do NOT phrase this as a patent-infringement question — no "
+        "genuine patent-claim evidence supports that framing here. "
+        "MANDATORY: the question MUST explicitly name, verbatim, both the "
+        "intermediate node and the terminal node from the reasoning path below "
+        "— do not paraphrase them as 'external services' or 'this dependency'. "
+        "Name them exactly as given."
+    ),
+    "PATENT_RELEVANT": (
+        "This is only WEAK PATENT RELEVANCE — a semantic-similarity match to "
+        "patent language, with no dependency routing and no verified patent "
+        "edge. Do NOT frame this as overlap or infringement. Ask, at most, "
+        "whether the team is aware of this patent and has reviewed it — "
+        "phrased as pure awareness-checking, not a risk allegation."
+    ),
+}
+
 def _build_prompt_from_structured_evidence(ev: dict) -> str:
-    """Build a prompt from structured_evidence.json format."""
-    claim  = ev.get("claim_text", ev.get("claim_id", ""))
+    """Build a prompt from structured_evidence.json format.
+
+    Deliberately uses ONLY ev['claim_text'] — the single primary claim
+    chosen by consolidate_by_dependency — never _merged_claim_texts.
+    Question-generation context must be scoped strictly to this one
+    reasoning path; merged claims exist for audit/classification only.
+    """
+    claim  = f'"{ev.get("claim_text", ev.get("claim_id", ""))}"'
     path   = ev.get("reasoning_path", [])
-    rtype  = ev.get("risk_type", "Unknown Risk")
+    relationship_kind = ev.get("_relationship") or classify_relationship(ev)
+    rtype  = _RELATIONSHIP_TO_CATEGORY[relationship_kind]
     score  = ev.get("confidence_score", 0.0)
     risk_n = ev.get("risk_node", "")
+    relationship = ev.get("relationship", "inferred")
+    instruction = _RELATIONSHIP_INSTRUCTIONS[relationship_kind]
 
     path_str = " → ".join(path) if path else "N/A"
 
+    if relationship == "verified":
+        evidence_strength = (
+            "VERIFIED — this path is backed entirely by structural facts "
+            "(confirmed code imports and/or confirmed license bindings), not by "
+            "semantic guesswork."
+        )
+    else:
+        evidence_strength = (
+            "INFERRED — at least one step in this path is an embedding-similarity "
+            "match, not a confirmed relationship. The connection may be coincidental "
+            "term overlap rather than a real functional or legal link."
+        )
+
+    required_terms = ""
+    if relationship_kind == "ARCHITECTURAL_DEPENDENCY" and len(path) >= 3:
+        required_terms = (
+            f"\nRequired terms — your question MUST contain both of these "
+            f"exact strings: \"{path[1]}\" and \"{path[-1]}\""
+        )
+
     return f"""EVIDENCE CHAIN
 --------------
-Claim from pitch deck: "{claim}"
+Claim from pitch deck: {claim}
 Risk type: {rtype}
+Relationship: {relationship_kind} — {instruction}
+Evidence strength: {evidence_strength}
 Confidence score: {score:.3f}
 Reasoning path: {path_str}
-Risk node flagged: {risk_n}
+Risk node flagged: {risk_n}{required_terms}
+Generate exactly one due-diligence question an investor should ask the founder
+about this evidence chain, following the relationship-specific instruction above.
 
-Generate exactly one adversarial due-diligence question an investor should ask
-the founder about this evidence chain."""
+If evidence strength is VERIFIED, ask a direct, pointed question about the
+implications of this confirmed fact.
+
+If evidence strength is INFERRED, do NOT assume the connection is real or that
+infringement/overlap has occurred. Phrase the question to first ask the founder
+to confirm or clarify whether a genuine relationship exists, before asking about
+its implications."""
 
 
 def _build_prompt_from_hop_chain(chain: dict) -> str:
@@ -275,24 +363,18 @@ def _article_for(text: str) -> str:
 
 
 def _template_question(chain: dict, source_format: str) -> str:
-    """Generate a deterministic fallback question when LLM is unavailable."""
-    if source_format == "structured_evidence":
-        claim  = _clean_snippet(chain.get("claim_text", chain.get("claim_id", "unknown claim")))
-        rtype  = chain.get("risk_type", "IP risk")
-        node   = chain.get("risk_node", "an external component")
-        return (
-            f"Your pitch claims '{claim}', but our evidence graph links that claim "
-            f"to {_article_for(rtype)} {rtype} signal involving '{node}'. What "
-            f"freedom-to-operate review, claim-chart analysis, or licensing strategy "
-            f"supports commercial deployment without infringement exposure?"
-        )
-    else:
-        # hop_chain format
+    """Deterministic, strictly evidence-scoped fallback question.
+
+    Each branch names only entities that appear in this chain's own
+    reasoning_path / claim_text / risk_node — never merged-claim content,
+    never patents/licenses unless the relationship type actually supports it.
+    """
+    if source_format != "structured_evidence":
+        # hop_chain format — unchanged
         start    = chain.get("start_node", "your claimed technology")
         nodes    = chain.get("path_nodes", [])
         has_pat  = chain.get("has_patent_node", False)
         has_lic  = chain.get("has_licence_conflict", False)
-
         if has_lic and has_pat:
             suffix = "given both open-source license obligations and active patent overlap?"
         elif has_lic:
@@ -301,19 +383,283 @@ def _template_question(chain: dict, source_format: str) -> str:
             suffix = "given the active patent we found in this dependency chain?"
         else:
             suffix = "and how does this third-party dependency chain affect your IP defensibility?"
-
         mid = f"'{nodes[1]}'" if len(nodes) > 1 else "external libraries"
         return (
             f"Your architecture references '{start}', which relies on {mid}. "
             f"What is your commercialization strategy {suffix}"
         )
 
+    claim = _clean_snippet(chain.get("claim_text", chain.get("claim_id", "unknown claim")))
+    node = chain.get("risk_node", "an external component")
+    path = chain.get("reasoning_path", []) or []
+    relationship = chain.get("_relationship") or chain.get("relationship") or classify_relationship(chain)
+
+    if relationship == "CONTRADICTS":
+        return (
+            f'The pitch states "{claim}", while repository evidence shows \'{node}\' '
+            f"in use. Can you clarify whether {node} is used in the production "
+            f"implementation, and which components remain independently developed?"
+        )
+
+    if relationship == "PRIOR_ART":
+        return (
+            f'The pitch states "{claim}", while the repository shows a dependency on '
+            f"'{node}', which implements a previously published technique. Was this "
+            f"prior art disclosed or considered as part of your IP strategy?"
+        )
+
+    if relationship == "ARCHITECTURAL_DEPENDENCY" and len(path) >= 3:
+        mid = path[1]
+        return (
+            f'The pitch states "{claim}", while the repository shows \'{mid}\' being '
+            f"used within '{node}'. What role does {mid} play in the production "
+            f"architecture, and which parts of the system were independently implemented?"
+        )
+
+    if relationship == "PATENT_OVERLAP":
+        return (
+            f'The pitch states "{claim}". Which specific elements of your implementation '
+            f"were compared against the claims of '{node}' during your freedom-to-operate "
+            f"review?"
+        )
+
+    if relationship == "PATENT_RELEVANT":
+        return (
+            f"Our evidence graph flags a weak semantic similarity between your pitch "
+            f'claim "{claim}" and the language of \'{node}\'. Is your team aware of this '
+            f"reference, and has it been reviewed?"
+        )
+
+    if relationship == "LICENSE":
+        return (
+            f'The pitch states "{claim}". What license obligations apply to \'{node}\', '
+            f"and how do they interact with your IP ownership claims?"
+        )
+
+    # DEPENDENCY — default
+    return (
+        f'The pitch states "{claim}", while repository evidence identifies \'{node}\' as a '
+        f"dependency. Which components rely on {node}, and what functionality remains "
+        f"proprietary?"
+    )
+
+# ── Relationship classifier ───────────────────────────────────────────────────
+# Distinguishes WHY a claim connects to evidence, not just WHAT node type it
+# touches. Without this, every claim→patent path becomes "IP Overlap" even
+# when the real story is a contradiction (claim denies X, code does X) or
+# prior art (claim says "in-house", dependency is a published technique).
+
+_CONTRADICTION_CLAIM_PHRASES = [
+    "not a wrapper", "no third-party", "not third-party",
+    "built and own", "own outright", "no open-source",
+    "not open-source", "without relying on", "independently",
+]
+_ORIGINALITY_CLAIM_PHRASES = [
+    "in-house", "built in house", "owned in-house", "in house",
+    "years of r&d", "in-house r&d", "designed and implemented in-house",
+]
+_KNOWN_ACADEMIC_DEPENDENCIES = {
+    "colbert-ai", "colbert", "rank-bm25", "sentence-transformers", "transformers",
+}
+
+_KNOWN_ACADEMIC_DEPENDENCIES = {
+    "colbert-ai", "colbert", "rank-bm25", "sentence-transformers", "transformers",
+}
+
+# Stdlib modules are never a meaningful dependency risk — they're always
+# present, never third-party, and never something a claim could contradict.
+try:
+    import sys as _sys
+    _STDLIB_MODULE_NAMES = set(_sys.stdlib_module_names)
+except AttributeError:
+    # Python <3.10 fallback: small manual list covering what shows up in
+    # import-graph parsing for typical repos.
+    _STDLIB_MODULE_NAMES = {
+        "typing", "abc", "collections", "functools", "dataclasses", "enum",
+        "itertools", "json", "os", "sys", "re", "io", "pathlib", "logging",
+        "datetime", "uuid", "base64", "socket", "threading", "copy", "types",
+        "operator", "string", "math", "random", "argparse", "traceback",
+        "warnings", "inspect", "contextlib", "asyncio", "shutil", "subprocess",
+    }
+
+
+def is_low_information_node(risk_node: str) -> bool:
+    """
+    True for terminal nodes that carry no due-diligence signal: bare stdlib
+    module names, or unresolved-license placeholders. These should never
+    become the subject of a question regardless of which claim they attach to.
+    """
+    node = str(risk_node or "").strip().lower()
+    if node in _STDLIB_MODULE_NAMES:
+        return True
+    if node.startswith("unknown"):
+        return True
+    return False
+
+
+def classify_relationship(ev: dict) -> str:
+    """
+    Returns one of: CONTRADICTS, PRIOR_ART, PATENT_OVERLAP, LICENSE, DEPENDENCY.
+    Heuristic, text-based — operates on claim_text + reasoning_path node names
+    since structured_evidence chains carry no explicit relationship label yet.
+    """
+    claim_text = (ev.get("claim_text") or "").lower()
+    path = ev.get("reasoning_path", []) or []
+    path_lower = [str(p).lower() for p in path]
+    path_str = " ".join(path_lower)
+    risk_node = str(ev.get("risk_node", "")).lower()
+
+    # Any evidence object whose TERMINAL node is a real dependency (per
+    # path_reasoner's own typing, via risk_type == "Dependency") counts as
+    # touching a dependency for contradiction purposes — not just the
+    # narrow academic whitelist. That whitelist is still used separately
+    # for prior-art detection, since prior art specifically means "this is
+    # a known published technique," which is a narrower claim than "this is
+    # some dependency."
+    is_real_dependency_terminal = ev.get("risk_type") == "Dependency"
+    touches_known_academic_dep = any(
+        dep in path_str for dep in _KNOWN_ACADEMIC_DEPENDENCIES
+    )
+
+    # Contradiction: claim explicitly denies third-party/open-source reliance,
+    # but the path actually routes through (or terminates at) a real dependency.
+    if (is_real_dependency_terminal or touches_known_academic_dep) and any(
+        p in claim_text for p in _CONTRADICTION_CLAIM_PHRASES
+    ):
+        return "CONTRADICTS"
+
+    # Prior art: claim asserts originality/in-house R&D, but the path routes
+    # through a dependency known to implement a published academic technique.
+    # Deliberately kept narrow (whitelist only) — "in-house" + "uses some
+    # random dependency" isn't prior art, it's just a dependency question.
+    if touches_known_academic_dep and any(p in claim_text for p in _ORIGINALITY_CLAIM_PHRASES):
+        return "PRIOR_ART"
+
+    # License: terminal risk node is a license identifier or license-flagged.
+    # License: terminal risk node is a license identifier or license-flagged.
+    if ev.get("risk_type") == "Commercial License" or risk_node in {
+        "mit", "apache-2.0", "gpl-2.0", "gpl-3.0", "agpl-3.0", "bsd-2-clause",
+        "bsd-3-clause", "unknown (requires manual review ⚠️)",
+    }:
+        return "LICENSE"
+
+    # path_reasoner now assigns risk_type conservatively based on whether a
+    # VERIFIED (non-semantic) edge actually reaches a patent node — read
+    # those categories directly instead of re-deriving from node presence.
+    claim_mentions_patent = any(
+        p in claim_text for p in ("provisional patent", "patent filed", "patent pending", "covered by a patent")
+    )
+    risk_type = ev.get("risk_type")
+
+    if risk_type == "Architectural Dependency":
+        return "ARCHITECTURAL_DEPENDENCY"
+
+    if risk_type == "Patent Relevance":
+        # Semantic similarity to patent language, no dependency routing and
+        # no verified patent edge — weakest possible patent-adjacent signal.
+        # Never allowed to read as overlap.
+        return "PATENT_RELEVANT" if not claim_mentions_patent else "PATENT_OVERLAP"
+
+    if risk_type == "Patent Overlap" or (risk_type == "IP Overlap" and ev.get("has_patent_node")):
+        # Legitimate genuine overlap: a verified edge actually reached a
+        # patent node, or the older literal "IP Overlap" string is present
+        # AND has_patent_node backs it up (kept for backward compatibility
+        # with any cached/legacy evidence objects).
+        return "PATENT_OVERLAP"
+
+    if claim_mentions_patent and ("patent" in risk_node or risk_type in {"Patent Relevance", "Architectural Dependency"}):
+        return "PATENT_OVERLAP"
+
+    return "DEPENDENCY"
+
+
+_RELATIONSHIP_TO_CATEGORY = {
+    "CONTRADICTS":               "Ownership Contradiction",
+    "PRIOR_ART":                 "Academic Prior Art",
+    "PATENT_OVERLAP":            "IP Overlap",
+    "PATENT_RELEVANT":           "Patent Relevance",
+    "ARCHITECTURAL_DEPENDENCY":  "Architectural Dependency",
+    "LICENSE":                   "Commercial License",
+    "DEPENDENCY":                "Dependency Risk",
+}
+
+# ── Hallucination guard ───────────────────────────────────────────────────────
+# Deterministically checks whether the LLM invented a patent number/identifier
+# that isn't actually present anywhere in that chain's evidence. This is
+# cheaper and more reliable than asking the LLM to self-check, and it never
+# needs a second LLM call — a failing question just falls back to the
+# template, which never fabricates identifiers in the first place.
+
+_PATENT_ID_PATTERN = re.compile(r'\bUS\s?-?\d{6,}\w*\b', re.IGNORECASE)
+_PATENT_MENTION_PATTERN = re.compile(
+    r'\bpatent\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Za-z]{0,2}\d{4,}|X{3,}|XYZ)\b',
+    re.IGNORECASE,
+)
+
+
+def _extract_real_patent_ids(ev: dict) -> set[str]:
+    """Collect any real patent-ID-shaped tokens (e.g. US12511322) that
+    actually appear in this chain's own evidence — claim text and
+    reasoning path — so we know what the question is allowed to cite."""
+    haystack = " ".join([
+        str(ev.get("claim_text", "")),
+        " ".join(str(n) for n in ev.get("reasoning_path", [])),
+        str(ev.get("risk_node", "")),
+    ])
+    return {m.upper().replace(" ", "") for m in _PATENT_ID_PATTERN.findall(haystack)}
+
+
+def question_has_fabricated_patent(question_text: str, ev: dict) -> bool:
+    """True if the question cites a specific patent number/placeholder that
+    isn't backed by any real patent ID in this chain's evidence."""
+    real_ids = _extract_real_patent_ids(ev)
+    for match in _PATENT_MENTION_PATTERN.finditer(question_text):
+        token = match.group(1).upper()
+        if token not in real_ids:
+            return True
+    return False
+
+def validate_question_grounding(question_text: str, ev: dict) -> bool:
+    """
+    Returns False if the question raises a topic the reasoning path doesn't
+    support — patents, licensing, infringement, commercialization — unless
+    the chain's classified relationship actually licenses that topic.
+    Also returns False for ARCHITECTURAL_DEPENDENCY chains that fail to
+    name the intermediate/terminal path nodes verbatim (points 3/4).
+    A failing question falls back to the template, which is grounded by
+    construction and names required nodes by construction.
+    """
+    relationship = ev.get("_relationship") or ev.get("relationship") or classify_relationship(ev)
+    text = question_text.lower()
+
+    if relationship == "ARCHITECTURAL_DEPENDENCY":
+        path = ev.get("reasoning_path", []) or []
+        if len(path) >= 3:
+            intermediate, terminal = path[1], path[-1]
+            if intermediate.lower() not in text or terminal.lower() not in text:
+                return False
+
+    if re.search(r"\bpatent(s|ed|ing)?\b", text) and relationship not in {"PATENT_OVERLAP", "PATENT_RELEVANT"}:
+        return False
+    if re.search(r"\blicens(e|ing)\b", text) and relationship != "LICENSE":
+        return False
+    if re.search(r"\binfring\w*", text) and relationship != "PATENT_OVERLAP":
+        return False
+    if re.search(r"\bcommerciali[sz]", text) and relationship not in {"DEPENDENCY", "ARCHITECTURAL_DEPENDENCY"}:
+        return False
+    if re.search(r"\btrade secret", text) and relationship not in {"CONTRADICTS", "PRIOR_ART"}:
+        return False
+
+    return True
+
 
 # ── Category classifier ───────────────────────────────────────────────────────
 
 def _classify(chain: dict, source_format: str) -> str:
     if source_format == "structured_evidence":
-        return chain.get("risk_type", "IP Overlap")
+        relationship = classify_relationship(chain)
+        chain["_relationship"] = relationship  # stash for prompt builder / dedup
+        return _RELATIONSHIP_TO_CATEGORY[relationship]
     has_lic = chain.get("has_licence_conflict", False)
     has_pat = chain.get("has_patent_node", False)
     if has_lic and has_pat:
@@ -350,6 +696,36 @@ def generate_questions(
     else:
         chains = data.get("chains", [])
         source_format = "hop_chains"
+
+    if source_format == "structured_evidence":
+        # Drop low-information risk nodes (stdlib modules, unresolved licenses)
+        # before anything else competes with them for a question slot.
+        chains = [
+            c for c in chains
+            if not is_low_information_node(c.get("risk_node", ""))
+        ]
+
+        # Tag each chain with its relationship type up front so dedup can use it.
+        for c in chains:
+            c["_relationship"] = classify_relationship(c)
+
+        # Merge chains that share the same terminal dependency/node across
+        # different claims — one underlying risk shouldn't become N questions.
+        chains = consolidate_by_dependency(chains)
+
+        # Diversity cap: keep at most 2 questions per (claim_id, relationship)
+        # family, prioritizing the highest-confidence chain in each family, so
+        # one claim/dependency pair can't consume the whole question budget.
+        from collections import defaultdict
+        by_family: dict[tuple, list[dict]] = defaultdict(list)
+        for c in sorted(chains, key=lambda x: x.get("confidence_score", 0.0), reverse=True):
+            key = (c.get("claim_id"), c.get("_relationship"))
+            if len(by_family[key]) < 2:
+                by_family[key].append(c)
+
+        diversified = [c for group in by_family.values() for c in group]
+        diversified.sort(key=lambda x: x.get("confidence_score", 0.0), reverse=True)
+        chains = diversified
 
     if max_questions:
         chains = chains[:max_questions]
@@ -393,6 +769,23 @@ def generate_questions(
             try:
                 question_text = _call_llm(prompt, provider, _model)
                 provider_used = f"{provider}/{_model}"
+                if source_format == "structured_evidence":
+                    if question_has_fabricated_patent(question_text, chain):
+                        logger.warning(
+                            "[%s] LLM question cited an unsupported patent reference — using template fallback",
+                            chain_id,
+                        )
+                        question_text = _template_question(chain, source_format)
+                        provider_used = f"{provider}/{_model}+hallucination_guard"
+                        template_count += 1
+                    elif not validate_question_grounding(question_text, chain):
+                        logger.warning(
+                            "[%s] LLM question raised an ungrounded topic — using template fallback",
+                            chain_id,
+                        )
+                        question_text = _template_question(chain, source_format)
+                        provider_used = f"{provider}/{_model}+grounding_guard"
+                        template_count += 1
             except Exception as e:
                 logger.warning("[%s] LLM failed, using template: %s", chain_id, e)
                 question_text = _template_question(chain, source_format)
@@ -401,6 +794,16 @@ def generate_questions(
 
         # Build audit trail
         if source_format == "structured_evidence":
+            # Canonicalize: ONE "relationship" field holding the classified
+            # type (CONTRADICTS / PATENT_OVERLAP / ...), separate
+            # "relationship_basis" holding verified/inferred. Do this after
+            # the prompt was already built above, since the prompt builder
+            # reads the pre-canonical "relationship" (verified/inferred).
+            relationship_type = chain.get("_relationship") or classify_relationship(chain)
+            chain["relationship_basis"] = chain.get("relationship", "inferred")
+            chain["relationship"] = relationship_type
+            chain.pop("_relationship", None)
+
             audit_trail = {
                 "hop_1": f"Pitch deck claim: {chain.get('claim_text', chain.get('claim_id', ''))[:80]}",
                 "hop_2": chain.get("reasoning_path", []),
@@ -424,7 +827,7 @@ def generate_questions(
             question=question_text,
             question_category=_classify(chain, source_format),
             has_licence_conflict=chain.get("has_licence_conflict", False),
-            has_patent_node=chain.get("has_patent_node", chain.get("risk_type") == "IP Overlap"),
+            has_patent_node=chain.get("has_patent_node", False),
             chain_score=chain.get("chain_score", chain.get("confidence_score", 0.0)),
             audit_trail=audit_trail,
             raw_provenance=provenance,
@@ -439,6 +842,61 @@ def generate_questions(
 
     return questions
 
+# ── Cross-claim dependency deduplication ──────────────────────────────────────
+# Multiple claims can independently point at the same dependency/technology
+# (e.g. claim_0004, claim_0007, and claim_0008 all reference rank-bm25). Left
+# alone, that produces N near-duplicate questions about one underlying risk.
+# This merges same-risk_node chains into one, keeping the strongest
+# relationship type present in the group and recording every contributing
+# claim so the merged question can reference all of them.
+
+_RELATIONSHIP_PRIORITY = [
+    "CONTRADICTS", "PRIOR_ART", "ARCHITECTURAL_DEPENDENCY",
+    "PATENT_OVERLAP", "LICENSE", "DEPENDENCY",
+]
+
+
+def consolidate_by_dependency(chains: list[dict]) -> list[dict]:
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for c in chains:
+        key = str(c.get("risk_node", "")).strip().lower()
+        groups[key].append(c)
+
+    def relationship_rank(c: dict) -> int:
+        rel = c.get("_relationship") or classify_relationship(c)
+        c["_relationship"] = rel
+        try:
+            return _RELATIONSHIP_PRIORITY.index(rel)
+        except ValueError:
+            return len(_RELATIONSHIP_PRIORITY)
+
+    consolidated: list[dict] = []
+    for group in groups.values():
+        if len(group) == 1:
+            consolidated.append(group[0])
+            continue
+
+        group_sorted = sorted(group, key=lambda c: (relationship_rank(c), -c.get("confidence_score", 0.0)))
+        primary = dict(group_sorted[0])
+        primary["_merged_claim_ids"] = [c.get("claim_id", "") for c in group]
+        primary["_merged_claim_texts"] = [c.get("claim_text", "") for c in group]
+        primary["confidence_score"] = max(c.get("confidence_score", 0.0) for c in group)
+        consolidated.append(primary)
+
+    consolidated.sort(key=lambda c: c.get("confidence_score", 0.0), reverse=True)
+    return consolidated
+
+
+def _claim_summary(ev: dict) -> str:
+    """Renders one claim, or — for a consolidated multi-claim chain —
+    every contributing claim, so the prompt/template can reference all of
+    them instead of silently dropping the merge down to just one."""
+    claim_ids = ev.get("_merged_claim_ids")
+    claim_texts = ev.get("_merged_claim_texts")
+    if claim_ids and claim_texts and len(claim_ids) > 1:
+        lines = [f'- ({cid}): "{txt}"' for cid, txt in zip(claim_ids, claim_texts)]
+        return "Multiple pitch claims independently reference this same evidence:\n" + "\n".join(lines)
+    return f'"{ev.get("claim_text", ev.get("claim_id", ""))}"'
 
 def save_questions(questions: list[DueDiligenceQuestion], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)

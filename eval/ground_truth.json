@@ -8,7 +8,8 @@
       "expected_patent_concept": "cryptographic hashing",
       "question": "Your pitch claims proprietary military-grade encryption, yet your codebase imports pycryptodome, an open-source library. How does using a public cryptographic library constitute a proprietary moat, and what is your exposure to the active patents on AES-256 implementations?",
       "risk_type": "Proprietary Claim Mismatch",
-      "severity": "CRITICAL"
+      "severity": "CRITICAL",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-002",
@@ -17,7 +18,8 @@
       "expected_patent_concept": "distributed ledger transaction verification",
       "question": "You describe a custom blockchain ledger, but your dependency graph shows a direct import of the web3 library. What is the technical boundary between your proprietary layer and the underlying Ethereum protocol, and how would a well-funded competitor replicating this stack affect your competitive position?",
       "risk_type": "IP Overlap",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-003",
@@ -26,7 +28,8 @@
       "expected_patent_concept": "graph traversal indexing",
       "question": "Your architecture claims a proprietary graph database, yet your requirements.txt lists neo4j as a core dependency. Given Neo4j's commercial licensing restrictions for SaaS deployment, what is your legal strategy for monetizing this at scale without triggering license violations?",
       "risk_type": "Commercial License",
-      "severity": "CRITICAL"
+      "severity": "CRITICAL",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-004",
@@ -35,7 +38,8 @@
       "expected_patent_concept": "collaborative filtering patent",
       "question": "You claim novel in-house ML algorithms for recommendations, but your codebase uses scikit-learn's collaborative filtering modules. What specifically distinguishes your approach from the open-source implementation, and have you reviewed the active collaborative filtering patents held by your potential acquirers?",
       "risk_type": "IP Overlap",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-005",
@@ -44,7 +48,8 @@
       "expected_patent_concept": "peer-to-peer routing",
       "question": "You describe a first-of-its-kind decentralized data mesh, yet your implementation imports libp2p. How do you plan to monetize commercially without violating the commercial-use restrictions in Competitor X's recent peer-to-peer routing patent?",
       "risk_type": "IP Overlap",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-006",
@@ -53,7 +58,8 @@
       "expected_patent_concept": "federated identity authentication",
       "question": "Your pitch explicitly states no dependency on third-party identity providers, yet auth0 is imported in your codebase. How do you reconcile this discrepancy, and what is your contingency plan if Auth0 changes its licensing terms?",
       "risk_type": "Proprietary Claim Mismatch",
-      "severity": "CRITICAL"
+      "severity": "CRITICAL",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-007",
@@ -62,7 +68,8 @@
       "expected_patent_concept": "transformer attention mechanism",
       "question": "You describe a proprietary NLP pipeline trained on proprietary data, but the codebase shows HuggingFace Transformers as a core dependency. Given that the transformer attention mechanism is covered by active Google and Microsoft patents, what freedom-to-operate analysis have you conducted for commercial deployment?",
       "risk_type": "IP Overlap",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-008",
@@ -71,16 +78,18 @@
       "expected_patent_concept": "zero-knowledge proof cryptography",
       "question": "You claim a custom zero-knowledge proof payment system, yet snarkjs appears as a dependency. The underlying Groth16 zk-SNARK construction has active patent claims. Can you demonstrate that your implementation is sufficiently differentiated, and what is your legal exposure if the patent holders pursue enforcement?",
       "risk_type": "IP Overlap",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-009",
       "claim": "Our database is proprietary and offers 10x performance over PostgreSQL",
       "expected_dependency": "psycopg2",
       "expected_patent_concept": "database indexing optimization",
-      "question": "You claim a proprietary database outperforming PostgreSQL, but psycopg2 — a PostgreSQL adapter — is a direct dependency. Are you building atop PostgreSQL rather than replacing it, and if so, how does that affect your differentiation claims to customers who pay a premium for your 'proprietary' database?",
+      "question": "You claim a proprietary database outperforming PostgreSQL, but psycopg2 \u2014 a PostgreSQL adapter \u2014 is a direct dependency. Are you building atop PostgreSQL rather than replacing it, and if so, how does that affect your differentiation claims to customers who pay a premium for your 'proprietary' database?",
       "risk_type": "Proprietary Claim Mismatch",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-010",
@@ -89,7 +98,8 @@
       "expected_patent_concept": "approximate nearest neighbor search",
       "question": "Your pitch says you built a home-grown vector search engine, but your codebase imports faiss-cpu, which is Facebook AI Research's library. Beyond the FAISS indexing layer, what novel technical contribution constitutes your proprietary vector search, and have you evaluated your exposure to the ANN patent portfolio held by major cloud providers?",
       "risk_type": "Proprietary Claim Mismatch",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-011",
@@ -98,16 +108,18 @@
       "expected_patent_concept": "inverted index search",
       "question": "You claim your entire pipeline is Apache-licensed, yet Elasticsearch is a dependency and it moved to the Server Side Public License in 2021, which restricts competing commercial offerings. How has this license change affected your legal posture, and have you evaluated migrating to a fully permissive alternative?",
       "risk_type": "Commercial License",
-      "severity": "CRITICAL"
+      "severity": "CRITICAL",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-012",
       "claim": "Our revolutionary consensus mechanism achieves 100,000 TPS with Byzantine fault tolerance",
       "expected_dependency": "tendermint",
       "expected_patent_concept": "byzantine fault tolerant consensus",
-      "question": "You claim a revolutionary consensus mechanism achieving 100k TPS, yet Tendermint — a well-established BFT consensus library — is in your dependency graph. What specifically is novel in your consensus protocol beyond the Tendermint foundation, and at what TPS does the performance gap between your implementation and vanilla Tendermint actually appear?",
+      "question": "You claim a revolutionary consensus mechanism achieving 100k TPS, yet Tendermint \u2014 a well-established BFT consensus library \u2014 is in your dependency graph. What specifically is novel in your consensus protocol beyond the Tendermint foundation, and at what TPS does the performance gap between your implementation and vanilla Tendermint actually appear?",
       "risk_type": "IP Overlap",
-      "severity": "MODERATE"
+      "severity": "MODERATE",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-013",
@@ -116,25 +128,88 @@
       "expected_patent_concept": "quantized neural network inference",
       "question": "You describe a proprietary on-device LLM inference engine, but your package list includes llama-cpp-python, which is a Python binding for llama.cpp. Given that on-device quantized LLM inference is covered by multiple active patents from Apple, Qualcomm, and Meta, what is your IP position and how would you defend against an infringement claim from a hardware partner?",
       "risk_type": "IP Overlap",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-014",
       "claim": "We built a custom federated learning framework that keeps all training data on-device",
       "expected_dependency": "syft",
       "expected_patent_concept": "federated machine learning",
-      "question": "You claim a custom federated learning framework, but OpenMined's PySyft — which carries its own Apache 2.0 license obligations — appears as a dependency. Beyond PySyft's differential privacy primitives, what constitutes your proprietary contribution to federated learning, and how are you handling the active federated learning patents held by Google?",
+      "question": "You claim a custom federated learning framework, but OpenMined's PySyft \u2014 which carries its own Apache 2.0 license obligations \u2014 appears as a dependency. Beyond PySyft's differential privacy primitives, what constitutes your proprietary contribution to federated learning, and how are you handling the active federated learning patents held by Google?",
       "risk_type": "IP Overlap",
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
     },
     {
       "id": "GT-015",
       "claim": "Our smart contract auditing tool uses a proprietary formal verification engine",
       "expected_dependency": "slither",
       "expected_patent_concept": "static analysis program verification",
-      "question": "Your pitch claims a proprietary formal verification engine for smart contracts, yet Slither — Trail of Bits' LGPL-licensed static analysis framework — is imported in your codebase. LGPL imposes specific obligations on commercial distribution. How are you complying with these terms, and what technical differentiation exists between your tooling and Slither's existing vulnerability detection capabilities?",
+      "question": "Your pitch claims a proprietary formal verification engine for smart contracts, yet Slither \u2014 Trail of Bits' LGPL-licensed static analysis framework \u2014 is imported in your codebase. LGPL imposes specific obligations on commercial distribution. How are you complying with these terms, and what technical differentiation exists between your tooling and Slither's existing vulnerability detection capabilities?",
       "risk_type": "Commercial License",
+      "severity": "HIGH",
+      "startup_id": "vaultchain"
+    },
+    {
+      "id": "GT-016",
+      "startup_id": "halcyon",
+      "claim": "All core retrieval technology - ingestion, dual indexing, and the TrueRank IP SNAPSHOT fusion-ranking engine - was designed and implemented in-house.",
+      "expected_dependency": "rank-bm25",
+      "expected_patent_concept": "BM25 sparse-vector retrieval combined with dense-embedding retrieval via reciprocal rank fusion",
+      "question": "TrueRank is described as combining lexical and semantic relevance signals into a single ranking. Does its underlying mechanism match any existing patented prior art?",
+      "risk_type": "Patent Overlap",
       "severity": "HIGH"
+    },
+    {
+      "id": "GT-017",
+      "startup_id": "halcyon",
+      "claim": "\"TrueRank is not a wrapper around someone else's open-source ranking library - it is proprietary technology we built and own outright.\"",
+      "expected_dependency": "rank-bm25",
+      "expected_patent_concept": "",
+      "question": "You state that TrueRank is not a wrapper around someone else's open-source ranking library. Which specific libraries does your retrieval pipeline depend on for lexical scoring?",
+      "risk_type": "Proprietary Claim Mismatch",
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "GT-018",
+      "startup_id": "halcyon",
+      "claim": "Core relevance scoring built and owned in-house - three years of in-house R&D underpin TrueRank's fusion-ranking mechanism.",
+      "expected_dependency": "colbert",
+      "expected_patent_concept": "",
+      "question": "Does any part of your retrieval pipeline depend on techniques published in academic research rather than developed internally, such as ColBERT (Khattab & Zaharia, SIGIR 2020)?",
+      "risk_type": "Academic Prior Art",
+      "severity": "HIGH"
+    },
+    {
+      "id": "GT-019",
+      "startup_id": "halcyon",
+      "claim": "Model weighting parameters and training data are not disclosed - core relevance scoring built and owned in-house, protected as a trade secret.",
+      "expected_dependency": "sentence_transformers",
+      "expected_patent_concept": "",
+      "question": "Are there open-source license obligations attached to sentence-transformers or transformers that could affect Halcyon's ability to claim exclusive ownership of its retrieval technology?",
+      "risk_type": "Commercial License",
+      "severity": "MODERATE"
+    },
+    {
+      "id": "GT-020",
+      "startup_id": "halcyon",
+      "claim": "All core retrieval technology - ingestion, dual indexing, and the TrueRank IP SNAPSHOT fusion-ranking engine - was designed and implemented in-house.",
+      "expected_dependency": "elasticsearch",
+      "expected_patent_concept": "",
+      "question": "The repository shows Elasticsearch as a dependency within the hybrid search architecture. Which components rely on Elasticsearch, and which remain proprietary?",
+      "risk_type": "Architectural Dependency",
+      "severity": "MODERATE"
+    },
+    {
+      "id": "GT-021",
+      "startup_id": "halcyon",
+      "claim": "Sub-100ms rerank latency - no third-party ranking dependency - TrueRank is proprietary technology we built and own outright.",
+      "expected_dependency": "backend.open_webui.retrieval.models.base_reranker",
+      "expected_patent_concept": "",
+      "question": "How does backend.open_webui.retrieval.models.base_reranker integrate with and rely upon the entity retriever's Reciprocal Rank usage in the production architecture?",
+      "risk_type": "Architectural Dependency",
+      "severity": "MODERATE"
     }
   ]
 }

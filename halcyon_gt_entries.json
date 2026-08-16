@@ -1,0 +1,62 @@
+[
+  {
+    "id": "GT-016",
+    "startup_id": "halcyon",
+    "claim": "All core retrieval technology - ingestion, dual indexing, and the TrueRank IP SNAPSHOT fusion-ranking engine - was designed and implemented in-house.",
+    "expected_dependency": "rank-bm25",
+    "expected_patent_concept": "BM25 sparse-vector retrieval combined with dense-embedding retrieval via reciprocal rank fusion",
+    "question": "TrueRank is described as combining lexical and semantic relevance signals into a single ranking. Does its underlying mechanism match any existing patented prior art?",
+    "risk_type": "IP Overlap",
+    "severity": "HIGH"
+  },
+  {
+    "id": "GT-017",
+    "startup_id": "halcyon",
+    "claim": "\"TrueRank is not a wrapper around someone else's open-source ranking library - it is proprietary technology we built and own outright.\"",
+    "expected_dependency": "rank-bm25",
+    "expected_patent_concept": "",
+    "question": "You state that TrueRank is not a wrapper around someone else's open-source ranking library. Which specific libraries does your retrieval pipeline depend on for lexical scoring?",
+    "risk_type": "Proprietary Claim Mismatch",
+    "severity": "CRITICAL"
+  },
+  {
+    "id": "GT-018",
+    "startup_id": "halcyon",
+    "claim": "Core relevance scoring built and owned in-house - three years of in-house R&D underpin TrueRank's fusion-ranking mechanism.",
+    "expected_dependency": "colbert",
+    "expected_patent_concept": "",
+    "question": "Does any part of your retrieval pipeline depend on techniques published in academic research rather than developed internally, such as ColBERT (Khattab & Zaharia, SIGIR 2020)?",
+    "risk_type": "Academic Prior Art",
+    "severity": "HIGH"
+  },
+  {
+    "id": "GT-019",
+    "startup_id": "halcyon",
+    "claim": "Model weighting parameters and training data are not disclosed - core relevance scoring built and owned in-house, protected as a trade secret.",
+    "expected_dependency": "sentence_transformers",
+    "expected_patent_concept": "",
+    "question": "Are there open-source license obligations attached to sentence-transformers or transformers that could affect Halcyon's ability to claim exclusive ownership of its retrieval technology?",
+    "risk_type": "Commercial License",
+    "severity": "MODERATE"
+  },
+  {
+    "id": "GT-020",
+    "startup_id": "halcyon",
+    "claim": "All core retrieval technology - ingestion, dual indexing, and the TrueRank IP SNAPSHOT fusion-ranking engine - was designed and implemented in-house.",
+    "expected_dependency": "elasticsearch",
+    "expected_patent_concept": "",
+    "question": "The repository shows Elasticsearch as a dependency within the hybrid search architecture. Which components rely on Elasticsearch, and which remain proprietary?",
+    "risk_type": "Architectural Dependency",
+    "severity": "MODERATE"
+  },
+  {
+    "id": "GT-021",
+    "startup_id": "halcyon",
+    "claim": "Sub-100ms rerank latency - no third-party ranking dependency - TrueRank is proprietary technology we built and own outright.",
+    "expected_dependency": "backend.open_webui.retrieval.models.base_reranker",
+    "expected_patent_concept": "",
+    "question": "How does backend.open_webui.retrieval.models.base_reranker integrate with and rely upon the entity retriever's Reciprocal Rank usage in the production architecture?",
+    "risk_type": "Architectural Dependency",
+    "severity": "MODERATE"
+  }
+]

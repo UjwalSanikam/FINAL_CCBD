@@ -23,10 +23,20 @@ CONTRADICTION_TAXONOMY = {
     },
     "crypto": {
         "marketing_triggers": [
-            "proprietary",
+            # Removed bare "proprietary" — it matched ANY proprietary claim
+            # in the pitch (e.g. "proprietary ranking technology"), not just
+            # crypto claims, firing false positives whenever the repo
+            # imported hashlib/cryptography for something unrelated (session
+            # tokens, password hashing, TLS) that has nothing to do with the
+            # claim being checked. Triggers now require crypto-specific
+            # proprietary language, not a general presence of "proprietary."
+            "proprietary encryption",
+            "proprietary cryptography",
+            "proprietary crypto",
             "military-grade",
             "custom encryption",
             "in-house crypto",
+            "in-house encryption",
             "secret lock",
         ],
         "prohibited_imports": [
@@ -108,14 +118,15 @@ class ProprietaryContradictionDetector:
                         )
                         discovered_contradictions.append({
                             "risk_type": "Proprietary Claim Mismatch",
-                            "severity": "HIGH",
+                            "severity": "MEDIUM",  # topic-adjacency, not a verified functional match — HIGH overstated confidence
                             "claim_id": claim,
                             "claim_text": attrs.get("full_text") or attrs.get("text") or claim,
                             "contradictory_module": module,
-                            "confidence_score": 0.99,
+                            "confidence_score": 0.6,  # keyword co-occurrence, not confirmed functional overlap
                             "recommended_action": (
-                                "Demand explanation for why an open-source "
-                                f"{category} library ({module}) is marketed as proprietary IP."
+                                f"Ask whether {module} is used to implement the specific "
+                                f"{category} functionality described as proprietary, or "
+                                "for an unrelated purpose elsewhere in the codebase."
                             ),
                         })
 

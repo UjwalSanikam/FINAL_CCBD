@@ -728,7 +728,10 @@ def generate_questions(
         chains = diversified
 
     if max_questions:
-        chains = chains[:max_questions]
+        if source_format == "structured_evidence":
+            chains = select_diverse_top_n(chains, max_questions)
+        else:
+            chains = chains[:max_questions]
 
     logger.info(
         "Generating %d questions from %s via %s%s",
@@ -885,6 +888,34 @@ def consolidate_by_dependency(chains: list[dict]) -> list[dict]:
 
     consolidated.sort(key=lambda c: c.get("confidence_score", 0.0), reverse=True)
     return consolidated
+
+def select_diverse_top_n(chains: list[dict], n: int) -> list[dict]:
+    """
+    Guarantee representation across relationship types when trimming to
+    max_questions. A flat confidence sort silently drops PATENT_OVERLAP/
+    CONTRADICTS/PRIOR_ART chains, since they're structurally handicapped
+    by hop-count length penalties relative to 1-hop Dependency chains —
+    even when they're the more decision-relevant finding. Round-robin
+    across relationship buckets (each internally confidence-sorted, since
+    `chains` arrives pre-sorted) so every risk type gets a fair shot at
+    the budget before any one type can crowd out the rest.
+    """
+    from collections import defaultdict, deque
+    buckets: dict[str, deque] = defaultdict(deque)
+    for c in chains:
+        buckets[c.get("_relationship", "DEPENDENCY")].append(c)
+
+    order = [r for r in _RELATIONSHIP_PRIORITY if r in buckets]
+    order += [r for r in buckets if r not in order]
+
+    selected: list[dict] = []
+    while len(selected) < n and any(buckets.values()):
+        for rel in order:
+            if buckets[rel]:
+                selected.append(buckets[rel].popleft())
+                if len(selected) >= n:
+                    break
+    return selected
 
 
 def _claim_summary(ev: dict) -> str:

@@ -327,6 +327,15 @@ _VERIFIED_EDGE_TYPES = {"IMPORTS", "LICENCED_UNDER"}
 # two strings looked similar to the encoder — not confirmed relationships.
 _INFERRED_EDGE_TYPES = {"IMPLEMENTED_BY", "SIMILAR_TO", "REQUIRES_IP_REVIEW"}
 
+# Patent nodes can never be reached via a _VERIFIED_EDGE_TYPES edge —
+# IMPORTS/LICENCED_UNDER describe code-to-code relationships; nothing
+# "imports" or is "licensed under" a patent. Every claim→...→Patent edge
+# in this graph is necessarily a SIMILAR_TO/REQUIRES_IP_REVIEW embedding
+# bridge, so overlap vs. mere relevance has to be judged by similarity
+# strength instead of edge type. 0.45 matches the same fusion-admission
+# threshold used elsewhere in the pipeline, not an arbitrary new bar.
+_PATENT_OVERLAP_CONFIDENCE_THRESHOLD = 0.45
+
 class DynamicPathReasoner:
     """
     Ujwal-style dynamic traversal over a fused graph.
@@ -439,23 +448,18 @@ class DynamicPathReasoner:
         attrs = self.G.nodes[node_id]
         return attrs.get("node_type") or attrs.get("label") or ""
 
+
     def _path_has_patent_node(self, path: list[str]) -> bool:
-        """
-        True only if the path reaches a Patent/Patent_Concept node through a
-        VERIFIED edge — never a semantic-similarity bridge (SIMILAR_TO,
-        REQUIRES_IP_REVIEW, IMPLEMENTED_BY). Every current patent bridge in
-        this pipeline is an embedding-similarity match against extracted
-        patent-sentence fragments, not confirmed technical overlap. Node-type
-        presence alone is not sufficient evidence of a genuine patent
-        relationship — a patent-typed node reached only via SIMILAR_TO is,
-        at most, patent relevance, never patent overlap.
-        """
         for i in range(len(path) - 1):
             u, v = path[i], path[i + 1]
             if self._node_role(v) in {"Patent_Concept", "Patent"}:
                 edge_data = self.G.get_edge_data(u, v, default={})
-                edge_type = edge_data.get("edge_type", "unknown")
-                if edge_type in _VERIFIED_EDGE_TYPES:
+                weight = edge_data.get("weight")
+                if weight is None:
+                    weight = edge_data.get("similarity")
+                if weight is None:
+                    weight = 0.0
+                if weight >= _PATENT_OVERLAP_CONFIDENCE_THRESHOLD:
                     return True
         return False
 

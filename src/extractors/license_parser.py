@@ -28,21 +28,33 @@ def run_license_scan(data_dir: Path):
 
     license_triples = []
     
+    skipped_stdlib = 0
     for node in nodes:
         module_name = node["id"]
-        # We only scan external third-party libraries for licenses, not internal code
-        if node.get("type") == "internal":
-            continue 
+        # Only scan external third-party libraries for licenses. Standard-
+        # library modules (os, sys, typing, abc, ...) ship with the Python
+        # interpreter and cannot carry a third-party license — sending them
+        # through LICENSE_DB lookup produced ~140 meaningless "UNKNOWN"
+        # results per run, since github_parser.py already tags these nodes
+        # type="stdlib" but this scan only ever checked for type="internal".
+        node_type = node.get("type", "")
+        if node_type in ("internal", "stdlib"):
+            if node_type == "stdlib":
+                skipped_stdlib += 1
+            continue
 
-        # Lookup the license. If we don't know it, default to MIT
         license_name = LICENSE_DB.get(module_name, "UNKNOWN (Requires Manual Review ⚠️)")
-        
         license_triples.append({
             "module": module_name,
             "relationship": "LICENSED_UNDER",
-            "license": license_name
+            "license": license_name,
         })
         logger.info(f"Scanned Dependency: '{module_name}' -> Licensed under: {license_name}")
+
+    logger.info(
+        "Skipped %d standard-library modules (not applicable for third-party license scan)",
+        skipped_stdlib,
+    )
 
     output_path = data_dir / "processed" / "license_knowledge.json"
     output_path.write_text(json.dumps({"licenses": license_triples}, indent=2), encoding="utf-8")

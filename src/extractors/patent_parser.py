@@ -68,6 +68,21 @@ _SKIP_SECTIONS = re.compile(
 _BRACKET_NOISE = re.compile(r"[\(\[\{<][^\)\]\}>]{0,80}[\)\]\}>]")
 _FIG_REF       = re.compile(r"\bFIG\.\s*\d+\w*", re.IGNORECASE)
 
+# Some patent .txt files in this dataset separate real, USPTO-sourced
+# patent content from a synthetic, testing-only relevance annotation
+# (marked "SECTION B — SYNTHETIC TESTING REPRESENTATION") that explicitly
+# documents itself as NOT part of the original patent. That block contains
+# arrow-diagram lines ("→ structurally overlaps with →") and meta-commentary,
+# not patent prose — running noun-phrase/relationship extraction over it
+# produces garbled, mid-sentence fragment entities. Cut it before section
+# or sentence parsing ever sees it.
+_SYNTHETIC_ANNOTATION_MARKER = re.compile(
+    r"={10,}\s*\n\s*SECTION B\b.*", re.IGNORECASE | re.DOTALL
+)
+
+
+def strip_synthetic_annotation(raw: str) -> str:
+    return _SYNTHETIC_ANNOTATION_MARKER.split(raw, maxsplit=1)[0]
 
 def clean_patent_text(raw: str) -> str:
     text = _FIG_REF.sub(" FIGREF ", raw)
@@ -307,6 +322,7 @@ def extract_triples_from_sentence(sentence: str) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def extract_triples_from_patent(text: str, patent_id: str = "UNKNOWN") -> list:
+    text        = strip_synthetic_annotation(text)
     sentences   = get_artefact_sentences(text)
     all_triples = []
     for sent in sentences:

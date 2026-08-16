@@ -437,7 +437,20 @@ def stage_13_explainability() -> bool:
 
 
 def stage_14_eval(ground_truth_path: Optional[Path] = None) -> bool:
-    """Recall@K + audit-trail coverage → eval_results.json"""
+    """
+    Structural metrics + (when ground truth is available) chain recall and
+    risk-classification accuracy → eval_results.json
+
+    Previously this stage had its own inline keyword-overlap implementation
+    duplicating (and only ever calling) the deprecated legacy_lexical_overlap
+    logic from eval_runner.py — ">=2 shared words of length >=4" is trivially
+    satisfied by generic due-diligence vocabulary ("proprietary",
+    "dependency", "claim"), which is why this consistently read ~100%
+    regardless of whether the questions were actually correct. Now routes
+    through evaluate_questions() with the real ground_truth_path so the
+    dependency-grounded metrics (chain_recall, risk_classification_accuracy,
+    evidence_precision) actually run instead of being silently skipped.
+    """
     try:
         from eval.eval_runner import evaluate_questions
         questions_path = PROCESSED / "questions.json"
@@ -447,28 +460,12 @@ def stage_14_eval(ground_truth_path: Optional[Path] = None) -> bool:
             logger.warning("No questions file found — skipping eval")
             return True
 
-        results = evaluate_questions(questions_path)
-
-        if ground_truth_path and ground_truth_path.exists():
-            gt = json.loads(ground_truth_path.read_text(encoding="utf-8"))
-            gt_questions = [q["question"].lower() for q in gt.get("questions", [])]
-            gen_data = json.loads(questions_path.read_text(encoding="utf-8"))
-            gen_questions = [
-                (q.get("question") or q.get("generated_question") or "").lower()
-                for q in gen_data.get("questions", [])
-            ]
-            # Keyword overlap: ≥2 shared words of length ≥4
-            overlap_count = 0
-            for gen_q in gen_questions:
-                gen_words = {w for w in gen_q.split() if len(w) >= 4}
-                for gt_q in gt_questions:
-                    gt_words = {w for w in gt_q.split() if len(w) >= 4}
-                    if len(gen_words & gt_words) >= 2:
-                        overlap_count += 1
-                        break
-            results["ground_truth_overlap"] = round(
-                overlap_count / max(len(gen_questions), 1), 3
-            )
+        graph_path = PROCESSED / "fused_knowledge_graph.json"
+        results = evaluate_questions(
+            questions_path,
+            ground_truth_path=ground_truth_path,
+            graph_path=graph_path,
+        )
 
         (PROCESSED / "eval_results.json").write_text(
             json.dumps(results, indent=2), encoding="utf-8"
@@ -488,8 +485,27 @@ def _print_eval(results: dict) -> None:
     print(f"{'═'*60}")
     print(f"  Total questions      : {results.get('total_questions', 0)}")
     print(f"  Audit trail coverage : {results.get('audit_trail_coverage', 0):.2%}")
-    if "ground_truth_overlap" in results:
-        print(f"  Ground truth overlap : {results['ground_truth_overlap']:.2%}")
+
+    qf = results.get("question_faithfulness")
+    if isinstance(qf, dict) and qf.get("question_faithfulness") is not None:
+        print(f"  Question faithfulness: {qf['question_faithfulness']:.2%} "
+              f"({qf.get('faithful', 0)}/{qf.get('total', 0)})")
+
+    ep = results.get("evidence_precision")
+    if isinstance(ep, dict) and "evidence_precision" in ep:
+        print(f"  Evidence precision   : {ep['evidence_precision']:.2%} "
+              f"({ep.get('verified', 0)}/{ep.get('total', 0)})")
+
+    if "chain_recall" in results:
+        cr = results["chain_recall"]
+        print(f"  Chain recall (GT)    : {cr['chain_recall']:.2%} "
+              f"({cr.get('matched', 0)}/{cr.get('total', 0)})  [startup: {results.get('startup_id_used', '?')}]")
+        rca = results.get("risk_classification_accuracy", {})
+        if rca.get("total_recalled"):
+            print(f"  Risk-class accuracy  : {rca['risk_classification_accuracy']:.2%} "
+                  f"({rca.get('correct', 0)}/{rca.get('total_recalled', 0)})")
+    else:
+        print("  (no ground_truth.json found — chain_recall / risk_classification_accuracy skipped)")
     print(f"{'═'*60}\n")
 
 
